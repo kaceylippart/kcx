@@ -1,0 +1,10 @@
+{:deps {cheshire/cheshire {:mvn/version "5.12.0"}}
+ :paths ["src"]
+
+ :aliases
+ {:dev {:extra-deps {}}
+
+  :test {:extra-paths ["test"]
+         :extra-deps {}}
+
+  :bb {:replace-deps {cheshire/cheshire {:mvn/version "5.12.0"}}}}}
