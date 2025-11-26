@@ -1,4 +1,31 @@
+# Build artifacts
 /target
+*.class
+*.jar
+
+# Environment files
 .env
 config.env
-kcx_state.kdl # Optional
+
+# State files (user-specific)
+kcx_state.kdl
+kcx_state.edn
+.kcx_current_project
+
+# Project registry and user data
+/.kcx/
+
+# IDE and tooling
+.clj-kondo/.cache/
+.lsp/.cache/
+
+# Temporary files
+*.tmp
+*.bak
+*~
+.#*
+#*#
+
+# OS generated files
+.DS_Store
+Thumbs.db

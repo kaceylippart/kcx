@@ -26,6 +26,29 @@
   []
   state-template)
 
+;; Project Registry System
+(def kcx-dir (str (System/getProperty "user.home") "/.kcx"))
+(def registry-file (str kcx-dir "/registry.edn"))
+
+(defn load-registry
+  "Load the project registry"
+  []
+  (if (.exists (io/file registry-file))
+    (try
+      (edn/read-string (slurp registry-file))
+      (catch Exception _ {}))
+    {}))
+
+(defn save-registry
+  "Save the project registry"
+  [registry]
+  (try
+    (io/make-parents registry-file)
+    (spit registry-file (with-out-str (pprint/pprint registry)))
+    :ok
+    (catch Exception e
+      {:error (str e)})))
+
 (defn get-current-state-file
   "Get the current project state file path"
   []
@@ -177,8 +200,45 @@
       (catch Exception e
         (str "❌ Failed to list projects: " (.getMessage e))))))
 
+;; Upsert Pattern - Auto-Creation Project Management
+(defn switch-project
+  "Switch to a project. If it doesn't exist, create it automatically (Upsert Pattern)."
+  [name]
+  (let [reg (load-registry)
+        existing-path (get reg name)
+
+        ;; Sanitize name for filename (e.g., "My Project" -> "My_Project")
+        safe-name (str/replace name #"[^a-zA-Z0-9-_]" "_")
+
+        ;; Determine path: Use existing registry entry OR default to ~/.kcx/projects/
+        final-path (or existing-path
+                       (str kcx-dir "/projects/" safe-name ".edn"))
+
+        file-exists? (.exists (io/file final-path))]
+
+    ;; 1. If new, initialize the file with a skeleton state
+    (when-not file-exists?
+      (io/make-parents final-path)
+      (let [project-template (-> (create-template)
+                                 (assoc-in [:meta :project] name)
+                                 (assoc-in [:meta :created] (str (java.time.Instant/now)))
+                                 (assoc-in [:context :status] "Initialized"))]
+        (spit final-path (with-out-str (pprint/pprint project-template)))))
+
+    ;; 2. Update Registry (if it wasn't there before)
+    (when-not existing-path
+      (save-registry (assoc reg name final-path)))
+
+    ;; 3. Set as active project (update current project tracking)
+    (set-current-project name)
+
+    ;; 4. Return status to Claude
+    (str "Active Project: " name "\n"
+         "Status: " (if file-exists? "Loaded existing memory." "Created new memory bank.") "\n"
+         "Location: " final-path)))
+
 (defn create-or-switch-project
-  "Create a new project or switch to existing one"
+  "Create a new project or switch to existing one (Legacy function - use switch-project instead)"
   [project-name force-init?]
   ;; Validate project name
   (if-not (and (not (str/blank? project-name))
@@ -210,7 +270,7 @@
               (str "🔄 Reinitialized and switched to project '" project-name "' at " filename)
               (str "✨ Created and switched to project '" project-name "' at " filename))
             (catch Exception e
-              (str "❌ Failed to create project file: " (.getMessage e)))))))))
+              (str "❌ Failed to create project file: " (str e)))))))))
 
 ;; KDL to EDN migration helper (for converting existing KDL files)
 (defn migrate-kdl-to-edn
