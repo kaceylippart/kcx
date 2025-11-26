@@ -4,7 +4,8 @@
     [clojure.edn :as edn]
     [clojure.java.io :as io]
     [clojure.pprint :as pprint]
-    [clojure.string :as str]))
+    [clojure.string :as str]
+    [kcx.utils :refer [read-file write-file]]))
 
 
 (def default-state-file "kcx_state.edn")
@@ -29,10 +30,6 @@
   "Create a new EDN state template"
   []
   state-template)
-
-
-(def read-file slurp)
-(def write-file spit)
 
 
 ;; Project Registry System

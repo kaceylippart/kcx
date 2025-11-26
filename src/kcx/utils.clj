@@ -1,6 +1,12 @@
 (ns kcx.utils
   "Shared utilities for KC-X"
-  (:require [clojure.string :as str]))
+  (:require
+    [clojure.string :as str]))
+
+
+(def read-file slurp)
+(def write-file spit)
+
 
 (defn format-timestamp
   "Format a timestamp for display"
@@ -12,6 +18,7 @@
     (catch Exception _
       instant-str)))
 
+
 (defn truncate-string
   "Truncate a string to max length with ellipsis"
   [s max-length]
@@ -19,15 +26,18 @@
     (str (subs s 0 (- max-length 3)) "...")
     s))
 
+
 (defn kebab-case->snake-case
   "Convert kebab-case to snake_case"
   [s]
   (str/replace s #"-" "_"))
 
+
 (defn snake-case->kebab-case
   "Convert snake_case to kebab-case"
   [s]
   (str/replace s #"_" "-"))
+
 
 (defn validate-file-path
   "Validate a file path is safe and reasonable"
@@ -46,6 +56,7 @@
     (catch Exception _
       default-val)))
 
+
 (defn format-duration
   "Format a duration between two instants"
   [start-str end-str]
@@ -61,6 +72,7 @@
     (catch Exception _
       "unknown")))
 
+
 (defn deep-merge
   "Recursively merge maps"
   [& maps]
@@ -70,15 +82,18 @@
                         (last args)))
          maps))
 
+
 (defn filter-map
   "Filter a map by predicate on key-value pairs"
   [pred m]
   (into {} (filter pred m)))
 
+
 (defn map-values
   "Transform all values in a map with function f"
   [f m]
   (into {} (map (fn [[k v]] [k (f v)]) m)))
+
 
 (defn ensure-vector
   "Ensure value is a vector"
@@ -89,10 +104,12 @@
     (nil? v) []
     :else [v]))
 
+
 (defn remove-nil-values
   "Remove keys with nil values from map"
   [m]
   (into {} (filter (fn [[_ v]] (not (nil? v))) m)))
+
 
 (defn format-error
   "Format an error message consistently"
@@ -100,17 +117,20 @@
   (str "❌ " (str/upper-case (name error-type)) ": " message
        (when details (str "\nDetails: " details))))
 
+
 (defn format-success
   "Format a success message consistently"
   [message & {:keys [details]}]
   (str "✅ " message
        (when details (str "\nDetails: " details))))
 
+
 (defn format-warning
   "Format a warning message consistently"
   [message & {:keys [details]}]
   (str "⚠️ " message
        (when details (str "\nDetails: " details))))
+
 
 (defn format-info
   "Format an info message consistently"

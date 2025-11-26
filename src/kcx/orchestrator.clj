@@ -53,19 +53,27 @@
 
 (defn handle-controller-command
   [cmd project-state]
-  (case (:verb cmd)
-    "proj" (handle-proj-command cmd)
-    "status" (str "📊 STATUS\nTask: " (get-in (read-string project-state) [:active-context :task] "None")
-                  "\n\nTasks:\n" (get-active-tasks-summary))
-    "plan" (str "📋 PLANNING\nRouting to Architect...")
-    (str "Controller executing: " (:verb cmd))))
+  (let [verb (:verb cmd)]
+    (cond
+      (= "proj" verb)
+      (handle-proj-command cmd)
+
+      (= "status" verb)
+      (str "📊 STATUS\nTask: " (get-in (read-string project-state) [:active-context :task] "None")
+           "\n\nTasks:\n" (get-active-tasks-summary))
+
+      (= "plan" verb)
+      "📋 PLANNING\nRouting to Architect..."
+
+      :else
+      (str "Controller executing: " (:verb cmd)))))
 
 
 (defn handle-curator-command
   [cmd project-state]
   (case (:verb cmd)
-    "save" (str "💾 SAVING state...")
-    "clean" (str "🧹 CLEANING memory...")
+    "save"  "💾 SAVING state..."
+    "clean" "🧹 CLEANING memory..."
     (str "Curator executing: " (:verb cmd))))
 
 
