@@ -1,11 +1,14 @@
 (ns kcx.state
   "State management for KC-X using EDN format"
-  (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]
-            [clojure.pprint :as pprint]
-            [clojure.string :as str]))
+  (:require
+    [clojure.edn :as edn]
+    [clojure.java.io :as io]
+    [clojure.pprint :as pprint]
+    [clojure.string :as str]))
+
 
 (def default-state-file "kcx_state.edn")
+
 
 ;; Default EDN template (converted from KDL format)
 (def state-template
@@ -21,33 +24,42 @@
 
    :memory []})
 
+
 (defn create-template
   "Create a new EDN state template"
   []
   state-template)
 
+
+(def read-file slurp)
+(def write-file spit)
+
+
 ;; Project Registry System
 (def kcx-dir (str (System/getProperty "user.home") "/.kcx"))
 (def registry-file (str kcx-dir "/registry.edn"))
+
 
 (defn load-registry
   "Load the project registry"
   []
   (if (.exists (io/file registry-file))
     (try
-      (edn/read-string (slurp registry-file))
+      (edn/read-string (read-file registry-file))
       (catch Exception _ {}))
     {}))
+
 
 (defn save-registry
   "Save the project registry"
   [registry]
   (try
     (io/make-parents registry-file)
-    (spit registry-file (with-out-str (pprint/pprint registry)))
+    (write-file registry-file (with-out-str (pprint/pprint registry)))
     :ok
     (catch Exception e
       {:error (str e)})))
+
 
 (defn get-current-state-file
   "Get the current project state file path"
@@ -55,7 +67,7 @@
   ;; Check if there's a current project set
   (if-let [current-project (try
                              (some-> ".kcx_current_project"
-                                     slurp
+                                     read-file
                                      str/trim)
                              (catch Exception _ nil))]
     (if (and (not (str/blank? current-project))
@@ -66,6 +78,7 @@
           default-state-file))
       default-state-file)
     default-state-file))
+
 
 (defn validate-edn
   "Validate EDN state structure"
@@ -78,6 +91,7 @@
     (catch Exception _
       false)))
 
+
 (defn load-state
   "Load state from EDN file with error recovery"
   ([]
@@ -85,7 +99,7 @@
   ([state-file]
    (if (.exists (io/file state-file))
      (try
-       (let [content (slurp state-file)
+       (let [content (read-file state-file)
              data (edn/read-string content)]
          (if (validate-edn data)
            data
@@ -101,6 +115,7 @@
                [:meta :created]
                (str (java.time.Instant/now))))))
 
+
 (defn save-state
   "Save state to EDN file with validation"
   ([state-data]
@@ -114,11 +129,12 @@
          (->> state-data
               (pprint/pprint)
               (with-out-str)
-              (spit state-file))
+              (write-file state-file))
          "State updated successfully.")
        "Error: Invalid EDN structure. State NOT saved.")
      (catch Exception e
        (str "Error: Failed to save state. " (.getMessage e))))))
+
 
 (defn save-state-string
   "Save state from EDN string with validation"
@@ -129,6 +145,7 @@
     (catch Exception e
       (str "Error: Invalid EDN format. State NOT saved.\n" (.getMessage e)))))
 
+
 (defn add-memory-decision
   "Add a decision to the memory log"
   [state decision]
@@ -136,15 +153,18 @@
                       :date (str (java.time.LocalDate/now))}]
     (update state :memory (fnil conj []) memory-entry)))
 
+
 (defn update-active-context
   "Update the active context (task and status)"
   [state task status]
   (assoc state :active-context {:task task :status status}))
 
+
 (defn update-stack-info
   "Update stack information (language, framework, etc.)"
   [state & {:keys [language framework] :as updates}]
   (update state :stack merge updates))
+
 
 ;; Project management functions
 (defn set-current-project
@@ -158,19 +178,20 @@
         :ok)
       ;; Set specific project
       (do
-        (spit ".kcx_current_project" project-name)
+        (write-file ".kcx_current_project" project-name)
         :ok))
     (catch Exception e
       {:error (.getMessage e)})))
+
 
 (defn list-projects
   "List all available projects"
   []
   (let [current-project (try
-                         (some-> ".kcx_current_project"
-                                 slurp
-                                 str/trim)
-                         (catch Exception _ "global"))
+                          (some-> ".kcx_current_project"
+                                  read-file
+                                  str/trim)
+                          (catch Exception _ "global"))
         current-project (if (str/blank? current-project) "global" current-project)]
 
     (try
@@ -200,6 +221,7 @@
       (catch Exception e
         (str "❌ Failed to list projects: " (.getMessage e))))))
 
+
 ;; Upsert Pattern - Auto-Creation Project Management
 (defn switch-project
   "Switch to a project. If it doesn't exist, create it automatically (Upsert Pattern)."
@@ -223,7 +245,7 @@
                                  (assoc-in [:meta :project] name)
                                  (assoc-in [:meta :created] (str (java.time.Instant/now)))
                                  (assoc-in [:context :status] "Initialized"))]
-        (spit final-path (with-out-str (pprint/pprint project-template)))))
+        (write-file final-path (with-out-str (pprint/pprint project-template)))))
 
     ;; 2. Update Registry (if it wasn't there before)
     (when-not existing-path
@@ -236,6 +258,7 @@
     (str "Active Project: " name "\n"
          "Status: " (if file-exists? "Loaded existing memory." "Created new memory bank.") "\n"
          "Location: " final-path)))
+
 
 (defn create-or-switch-project
   "Create a new project or switch to existing one (Legacy function - use switch-project instead)"
@@ -271,6 +294,7 @@
               (str "✨ Created and switched to project '" project-name "' at " filename))
             (catch Exception e
               (str "❌ Failed to create project file: " (str e)))))))))
+
 
 ;; KDL to EDN migration helper (for converting existing KDL files)
 (defn migrate-kdl-to-edn
