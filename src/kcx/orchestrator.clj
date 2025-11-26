@@ -1,30 +1,19 @@
 (ns kcx.orchestrator
   "Multi-agent workflow orchestrator for KC-X"
-  (:require [kcx.agents :as agents]
-            [kcx.dsl :as dsl]
-            [clojure.string :as str]))
+  (:require
+    [clojure.string :as str]
+    [kcx.agents :as agents]
+    [kcx.dsl :as dsl]))
 
-;; Orchestrator state management
+
+;; --- STATE ---
 (defonce orchestrator-state
   (atom {:active-tasks {}
          :agent-contexts {}}))
 
-(defn get-active-tasks []
-  (:active-tasks @orchestrator-state))
 
-(defn get-agent-contexts []
-  (:agent-contexts @orchestrator-state))
-
-(defn add-task [task]
-  (swap! orchestrator-state assoc-in [:active-tasks (:id task)] task))
-
-(defn update-task [task-id update-fn]
-  (swap! orchestrator-state update-in [:active-tasks task-id] update-fn))
-
-(defn remove-task [task-id]
-  (swap! orchestrator-state update :active-tasks dissoc task-id))
-
-(defn get-active-tasks-summary []
+(defn get-active-tasks-summary
+  []
   (let [tasks (vals (:active-tasks @orchestrator-state))]
     (if (empty? tasks)
       "No active tasks"
@@ -32,197 +21,115 @@
            (map #(str "- " (:id %) " (" (:status %) "): " (get-in % [:original-command :verb])))
            (str/join "\n")))))
 
-;; Project management command handler (defined first for forward reference)
-(defn handle-proj-command [cmd]
+
+(defn add-task
+  [task]
+  (swap! orchestrator-state assoc-in [:active-tasks (:id task)] task))
+
+
+(defn update-task
+  [task-id update-fn]
+  (swap! orchestrator-state update-in [:active-tasks task-id] update-fn))
+
+
+;; --- HANDLERS ---
+
+(defn handle-proj-command
+  [cmd]
   (case (:target cmd)
     "global_context"
-    ;; No target specified - list available projects
-    (do
-      (require 'kcx.state)
-      ((resolve 'kcx.state/list-projects)))
+    (do (require 'kcx.state) ((resolve 'kcx.state/list-projects)))
 
     "global"
-    ;; Switch to global project
-    (do
-      (require 'kcx.state)
-      (let [result ((resolve 'kcx.state/set-current-project) "global")]
-        (if (= result :ok)
-          "✅ Switched to global project (kcx_state.edn)"
-          (str "❌ Failed to switch to global project: " (:error result)))))
+    (do (require 'kcx.state)
+        (let [result ((resolve 'kcx.state/set-current-project) "global")]
+          (if (= result :ok) "✅ Switched to global" (str "❌ Error: " (:error result)))))
 
-    ;; Target specified - create/switch to project
+    ;; Target specified
     (let [should-init? (some #{"init"} (:includes cmd))]
       (require 'kcx.state)
-      ((resolve 'kcx.state/create-or-switch-project) (:target cmd) should-init?))))
+      ((resolve 'kcx.state/switch-project) (:target cmd)))))
 
-;; Single-agent command handlers
-(defn handle-controller-command [cmd project-state]
+
+(defn handle-controller-command
+  [cmd project-state]
   (case (:verb cmd)
     "proj" (handle-proj-command cmd)
-    "status" (str "📊 KC-X STATUS\n\nProject State: Active\nCurrent Task: "
-                  (get-in (read-string project-state) [:active-context :task] "None")
-                  "\n\nActive Tasks:\n" (get-active-tasks-summary))
-    "plan" (str "📋 PLANNING MODE\n\nAnalyzing command: " (dsl/format-command-summary cmd)
-                "\n\nThis command will be routed to: " (agents/route-command cmd))
-    (str "Controller handling: " (:verb cmd))))
+    "status" (str "📊 STATUS\nTask: " (get-in (read-string project-state) [:active-context :task] "None")
+                  "\n\nTasks:\n" (get-active-tasks-summary))
+    "plan" (str "📋 PLANNING\nRouting to Architect...")
+    (str "Controller executing: " (:verb cmd))))
 
-(defn handle-memory-command [cmd project-state]
+
+(defn handle-curator-command
+  [cmd project-state]
   (case (:verb cmd)
-    "remember" (str "💭 MEMORY: Added to project context")
-    "forget" (str "🗑️  MEMORY: Removed from project context")
-    "context" (str "🧠 CONTEXT: Current project context displayed")
-    "priority" (str "🎯 PRIORITY: Task priority updated")
-    (str "MemoryManager handling: " (:verb cmd))))
+    "save" (str "💾 SAVING state...")
+    "clean" (str "🧹 CLEANING memory...")
+    (str "Curator executing: " (:verb cmd))))
 
-(defn handle-review-command [cmd project-state]
-  (case (:verb cmd)
-    "review" (str "🔍 REVIEWER: Code review initiated")
-    "check" (str "✅ REVIEWER: Quality check performed")
-    "validate" (str "🎯 REVIEWER: Validation completed")
-    "approve" (str "👍 REVIEWER: Changes approved")
-    "lint" (str "🧹 REVIEWER: Code linting performed")
-    (str "Reviewer handling: " (:verb cmd))))
 
-(defn handle-proj-command [cmd]
-  (case (:target cmd)
-    "global_context"
-    ;; No target specified - list available projects
-    (require 'kcx.state)
-    ((resolve 'kcx.state/list-projects))
+(defn handle-review-command
+  [cmd project-state]
+  (str "🔍 REVIEWING: " (:verb cmd)))
 
-    "global"
-    ;; Switch to global project
-    (do
-      (require 'kcx.state)
-      (let [result ((resolve 'kcx.state/set-current-project) "global")]
-        (if (= result :ok)
-          "✅ Switched to global project (kcx_state.edn)"
-          (str "❌ Failed to switch to global project: " (:error result)))))
 
-    ;; Target specified - create/switch to project
-    (let [should-init? (some #{"init"} (:includes cmd))]
-      (require 'kcx.state)
-      ((resolve 'kcx.state/create-or-switch-project) (:target cmd) should-init?))))
+;; --- EXECUTION ---
 
-;; Single-agent execution
-(defn execute-single-agent [cmd agent-type project-state]
+(defn execute-single-agent
+  [cmd agent-type project-state]
   (case agent-type
     :controller (handle-controller-command cmd project-state)
-    :memory-manager (handle-memory-command cmd project-state)
-    :reviewer (handle-review-command cmd project-state)
-    :coder-builder
-    ;; Even simple coder commands should go through review
-    (str "AGENT_WORKFLOW_REQUIRED: Command '" (:verb cmd) "' requires CoderBuilder -> Reviewer workflow")))
+    :curator    (handle-curator-command cmd project-state)
+    :reviewer   (handle-review-command cmd project-state)
+    :worker     (str "WORKFLOW REQUIRED: '" (:verb cmd) "' needs full Worker->Reviewer loop.")
+    :architect  (str "WORKFLOW REQUIRED: '" (:verb cmd) "' needs Architect->Worker loop.")
+    :tester     (str "WORKFLOW REQUIRED: '" (:verb cmd) "' needs TDD loop.")))
 
-;; Multi-agent workflow execution
-(defn create-controller-plan [cmd project-state]
-  (let [system-prompt (agents/get-system-prompt :controller)]
-    (str system-prompt "\n\n"
-         "CURRENT PROJECT STATE:\n" project-state "\n\n"
-         "DSL COMMAND TO EXECUTE:\n"
-         "- Verb: " (:verb cmd) "\n"
-         "- Target: " (:target cmd) "\n"
-         "- Includes: " (:includes cmd) "\n"
-         "- Excludes: " (:excludes cmd) "\n"
-         "- Redirect: " (:redirect cmd) "\n"
-         "- Agent: " (:agent cmd) "\n\n"
-         "Please create a detailed execution plan for this command, considering:\n"
-         "1. What files need to be created/modified\n"
-         "2. What constraints must be followed (+includes, -excludes)\n"
-         "3. What the expected outcome should be\n"
-         "4. Any dependencies or prerequisites")))
 
-(defn create-implementation-request [cmd controller-plan project-state]
-  (let [system-prompt (agents/get-system-prompt :coder-builder)]
-    (str system-prompt "\n\n"
-         "CONTROLLER PLAN:\n" controller-plan "\n\n"
-         "CURRENT PROJECT STATE:\n" project-state "\n\n"
-         "IMPLEMENTATION REQUIREMENTS:\n"
-         "- Execute the plan created by the Controller Agent\n"
-         "- Follow all constraints: +includes " (:includes cmd) ", -excludes " (:excludes cmd) "\n"
-         "- Target: " (:target cmd) "\n"
-         (when (:redirect cmd) (str "- Output to: " (:redirect cmd) "\n"))
-         "\nImplement the changes according to the Controller's plan.")))
+(defn create-controller-plan
+  [cmd project-state]
+  (let [prompt (agents/get-system-prompt :controller)]
+    (str prompt "\n\n"
+         "STATE: " project-state "\n"
+         "COMMAND: " (dsl/format-command-summary cmd) "\n\n"
+         "TASK: Create a detailed execution plan.")))
 
-(defn execute-workflow [task-id cmd project-state]
-  ;; Phase 1: Controller plans the work
+
+(defn create-implementation-request
+  [cmd controller-plan project-state]
+  (let [prompt (agents/get-system-prompt :worker)] ; FIXED: Was :coder-builder
+    (str prompt "\n\n"
+         "PLAN: " controller-plan "\n"
+         "STATE: " project-state "\n\n"
+         "TASK: Implement the plan. Use 'write_file' tools.")))
+
+
+(defn execute-workflow
+  [task-id cmd project-state]
+  ;; 1. Controller Plans
   (let [controller-plan (create-controller-plan cmd project-state)
-
-        ;; Phase 2: CoderBuilder implementation request
+        ;; 2. Worker executes
         implementation-request (create-implementation-request cmd controller-plan project-state)]
 
-    ;; Update task status
     (update-task task-id #(agents/update-task-status % :needs-review))
 
-    ;; Return structured workflow request
-    (str "MULTI_AGENT_WORKFLOW_INITIATED:\n\n"
-         "TASK_ID: " task-id "\n"
-         "PRIMARY_AGENT: CoderBuilder\n"
-         "STATUS: NeedsReview\n\n"
-         "=== CONTROLLER PLAN ===\n"
-         controller-plan "\n\n"
-         "=== IMPLEMENTATION REQUEST ===\n"
-         implementation-request "\n\n"
-         "=== NEXT STEPS ===\n"
-         "1. CoderBuilder will implement the changes\n"
-         "2. Reviewer will validate the implementation\n"
-         "3. MemoryManager will update project state\n"
-         "4. User will be prompted for final approval\n\n"
-         "Please execute this multi-agent workflow using your available tools.")))
+    (str "🚀 MULTI-AGENT WORKFLOW STARTED\n"
+         "TASK: " task-id "\n"
+         "AGENT: Worker\n\n"
+         "=== PLAN ===\n" controller-plan "\n\n"
+         "=== INSTRUCTION ===\n" implementation-request)))
 
-;; Main execution entry point
-(defn execute-command [cmd project-state]
-  ;; Step 1: Route command to appropriate agent
+
+;; --- ENTRY POINT ---
+
+(defn execute-command
+  [cmd project-state]
   (let [primary-agent (agents/route-command cmd)
         requires-workflow? (agents/requires-workflow? cmd)]
 
     (if-not requires-workflow?
-      ;; Simple command - handle directly by single agent
       (execute-single-agent cmd primary-agent project-state)
-
-      ;; Step 2: Create task and initiate multi-agent workflow
-      (let [task (agents/create-agent-task cmd primary-agent)
-            task-id (:id task)]
-
-        ;; Add task to orchestrator state
+      (let [task (agents/create-agent-task cmd primary-agent)]
         (add-task task)
-
-        ;; Step 3: Execute multi-agent workflow
-        (execute-workflow task-id cmd project-state)))))
-
-;; Task management functions
-(defn complete-task [task-id result]
-  (update-task task-id #(agents/update-task-status % :completed :result result)))
-
-(defn fail-task [task-id error]
-  (update-task task-id #(agents/update-task-status % :failed :result error)))
-
-(defn approve-task [task-id]
-  (update-task task-id #(agents/update-task-status % :approved)))
-
-(defn reject-task [task-id reason]
-  (update-task task-id #(agents/update-task-status % :rejected :result reason)))
-
-;; Workflow stage functions for external coordination
-(defn get-task-by-id [task-id]
-  (get-in @orchestrator-state [:active-tasks task-id]))
-
-(defn list-tasks-by-status [status]
-  (->> (:active-tasks @orchestrator-state)
-       vals
-       (filter #(= (:status %) status))))
-
-(defn clear-completed-tasks []
-  (swap! orchestrator-state
-         update :active-tasks
-         #(into {} (remove (fn [[_ task]] (= (:status task) :completed)) %))))
-
-;; Agent context management
-(defn set-agent-context [agent-type context]
-  (swap! orchestrator-state assoc-in [:agent-contexts agent-type] context))
-
-(defn get-agent-context [agent-type]
-  (get-in @orchestrator-state [:agent-contexts agent-type]))
-
-(defn clear-agent-contexts []
-  (swap! orchestrator-state assoc :agent-contexts {}))
+        (execute-workflow (:id task) cmd project-state)))))

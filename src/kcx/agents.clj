@@ -1,122 +1,165 @@
 (ns kcx.agents
-  "Agent system for KC-X multi-tiered architecture")
+  "Agent system definitions and capabilities for KC-X"
+  (:require
+    [clojure.string :as str]))
 
-;; Agent types in the KC-X multi-tiered system
+
+;; --- AGENT TYPES ---
 (def agent-types
-  #{:controller      ; High-level coordination, routing, project management
-    :memory-manager  ; EDN state updates, memory management, context shifts
-    :coder-builder   ; Code implementation, file operations, change reporting
-    :reviewer})      ; Quality assurance, requirement validation, approval gate
+  #{:controller ; High-level coordination, routing
+    :curator    ; EDN state updates, memory management (The Librarian)
+    :architect  ; System design, planning
+    :worker     ; Code implementation (The Builder)
+    :reviewer   ; Quality assurance, validation
+    :tester})   ; TDD and verification
 
-;; Task status types
-(def task-statuses
-  #{:pending       ; Task created, not yet started
-    :in-progress   ; Agent is working on it
-    :needs-review  ; Waiting for reviewer approval
-    :approved      ; Reviewer approved, ready to execute
-    :completed     ; Task fully finished
-    :failed        ; Task failed with error
-    :rejected})    ; Reviewer rejected the changes
-
-;; Message types for inter-agent communication
-(def message-types
-  #{:route-command     ; Controller -> Other agents: route this command
-    :implement-task    ; Controller -> CoderBuilder: implement this task
-    :review-changes    ; CoderBuilder -> Reviewer: please review these changes
-    :update-memory     ; Any -> MemoryManager: update state with this info
-    :approval-request  ; Any -> Reviewer: approve this action
-    :approval-response ; Reviewer -> Any: approval granted/denied
-    :state-update      ; MemoryManager -> All: state has been updated
-    :task-complete     ; Any -> Controller: task finished
-    :error-report})    ; Any -> Controller: something went wrong
-
-;; Agent router determines which agent should handle a command
+;; --- ROUTING ---
 (defn route-command
   "Determine the primary agent for a DSL command"
   [{:keys [verb]}]
   (case verb
-    ;; Project and high-level coordination -> Controller
-    ("proj" "switch" "plan" "status") :controller
+    ;; Project management
+    ("proj" "switch" "status" "list" "new") :controller
 
-    ;; Memory and state management -> MemoryManager
-    ("remember" "forget" "context" "priority") :memory-manager
+    ;; Memory management
+    ("remember" "forget" "context" "priority" "save" "clean") :curator
 
-    ;; Code generation and modification -> CoderBuilder
-    ("gen" "create" "edit" "refactor" "fix" "build" "test" "run") :coder-builder
+    ;; Architecture
+    ("design" "architect" "plan" "arch") :architect
 
-    ;; Quality assurance and validation -> Reviewer
+    ;; Implementation
+    ("gen" "create" "edit" "refactor" "fix" "build" "run" "code") :worker
+
+    ;; Testing
+    ("test" "tdd") :tester
+
+    ;; Review
     ("review" "check" "validate" "approve" "lint") :reviewer
 
-    ;; Default to CoderBuilder for unknown commands
-    :coder-builder))
+    ;; Default
+    :controller))
+
 
 (defn requires-workflow?
   "Determine if a command requires multi-agent workflow"
   [{:keys [verb]}]
-  ;; Commands that typically require collaboration between agents
-  (contains? #{"gen" "create" "edit" "refactor" "fix" "build"} verb))
+  (contains? #{"gen" "create" "edit" "refactor" "fix" "build" "test" "tdd"} verb))
 
-;; Agent capabilities and system prompts
+
+;; --- CAPABILITIES & PROMPTS ---
 (def agent-capabilities
   {:controller
-   {:description "High-level project coordination and task routing"
+   {:role "Mission Controller"
+    :description "High-level project coordination and task routing"
     :system-prompt
-    "You are the Controller Agent in the KC-X multi-agent system.
-Your responsibilities:
-1. Analyze DSL commands and create execution plans
-2. Route tasks to appropriate specialized agents
-3. Coordinate multi-agent workflows
-4. Provide project status and high-level guidance
-5. Handle project management and context switching
+    "ROLE: Mission Controller.
+     GOAL: Analyze ambiguous requests and route them to specialists.
+     PROTOCOL:
+     1. STARTUP: If user mentions project names, use 'switch_project'.
+     2. ROUTING: Route technical tasks to :architect, :worker, or :tester.
+     3. STATUS: If asked for status/list, check registry or state.
+     TOOL USE: 'switch_project', 'handoff'."}
 
-Focus on strategic planning and coordination rather than implementation details."}
-
-   :memory-manager
-   {:description "EDN state management and project memory"
+   :curator
+   {:role "Context Curator"
+    :description "EDN state management and project memory"
     :system-prompt
-    "You are the Memory Manager Agent in the KC-X multi-agent system.
-Your responsibilities:
-1. Update and maintain EDN state files
-2. Track project decisions and context
-3. Manage task priorities and memory
-4. Handle context switching between projects
-5. Preserve project history and learning
+    "ROLE: Context Curator (Librarian).
+     GOAL: Maintain 'kcx_state.edn' as the Single Source of Truth.
+     PROTOCOL:
+     1. ANALYZE the conversation/task results.
+     2. UPDATE :active-context (task status, files).
+     3. APPEND to :memory (decisions, lessons).
+     4. PRUNE completed tasks.
+     TOOL USE: You MUST use 'update_state'."}
 
-Focus on maintaining accurate state and providing context to other agents."}
-
-   :coder-builder
-   {:description "Code implementation and file operations"
+   :architect
+   {:role "System Architect"
+    :description "System design and planning"
     :system-prompt
-    "You are the CoderBuilder Agent in the KC-X multi-agent system.
-Your responsibilities:
-1. Implement code changes based on Controller plans
-2. Generate, modify, and refactor code files
-3. Handle file operations and project structure
-4. Execute builds, tests, and development tasks
-5. Report implementation progress and issues
+    "ROLE: System Architect.
+     GOAL: High-level design and planning. Do NOT write implementation code.
+     PROTOCOL:
+     1. ANALYZE requirements.
+     2. CREATE a plan/spec (Markdown).
+     3. IDENTIFY necessary files.
+     4. HANDOFF to :worker to execute.
+     TOOL USE: 'write_file' (docs), 'handoff'."}
 
-Focus on practical implementation while following the execution plan."}
+   :worker
+   {:role "Senior Developer"
+    :description "Code implementation and file operations"
+    :system-prompt
+    "ROLE: Senior Developer.
+     GOAL: Implement logic to satisfy requirements.
+     PROTOCOL:
+     1. READ: Understand existing code via 'read_file' or 'list_files'.
+     2. IMPLEMENT: Write efficient, clean code.
+     3. VERIFY: Ensure code compiles/runs if possible.
+     4. SUBMIT: Handoff to :reviewer when done.
+     TOOL USE: 'read_file', 'write_file', 'run_shell', 'handoff'."}
+
+   :tester
+   {:role "QA Engineer"
+    :description "Test Driven Development"
+    :system-prompt
+    "ROLE: QA Engineer (TDD).
+     GOAL: Ensure quality via tests.
+     PROTOCOL:
+     1. PRE-CODE: Write failing tests.
+     2. VERIFY: Run tests using 'run_shell'.
+     3. LOOP: If fail, handoff to :worker.
+     4. SUCCESS: If pass, handoff to :reviewer.
+     TOOL USE: 'write_file' (tests), 'run_shell', 'handoff'."}
 
    :reviewer
-   {:description "Quality assurance and requirement validation"
+   {:role "Lead Reviewer"
+    :description "Quality assurance and approval"
     :system-prompt
-    "You are the Reviewer Agent in the KC-X multi-agent system.
-Your responsibilities:
-1. Review all code changes before finalization
-2. Validate requirements and constraints
-3. Ensure code quality and standards compliance
-4. Approve or reject proposed changes
-5. Provide constructive feedback and improvements
+    "ROLE: Lead Code Reviewer.
+     GOAL: Enforce standards and correctness.
+     PROTOCOL:
+     1. AUDIT: Read code changes from Worker.
+     2. CRITIQUE: Check for bugs/security.
+     3. REJECT: Handoff back to :worker with fixes.
+     4. APPROVE: Handoff to :curator to close task.
+     TOOL USE: 'read_file', 'handoff'."}})
 
-Focus on quality, correctness, and adherence to project requirements."}})
 
 (defn get-system-prompt
-  "Get the system prompt for a specific agent type"
   [agent-type]
   (get-in agent-capabilities [agent-type :system-prompt]))
 
+
+;; --- VALIDATION (Moved from templates.clj) ---
+(defn validate-agent-output
+  "Validate that agent followed their constraints"
+  [agent-key output]
+  (case agent-key
+    :worker
+    (or (str/includes? output "write_file")
+        (str/includes? output "handoff")
+        {:error "Worker must write code or handoff"})
+
+    :architect
+    (or (str/includes? output "write_file")
+        (str/includes? output "handoff")
+        {:error "Architect must document plan or handoff"})
+
+    :curator
+    (or (str/includes? output "update_state")
+        {:error "Curator must use update_state"})
+
+    :reviewer
+    (or (str/includes? output "handoff")
+        {:error "Reviewer must use handoff to proceed"})
+
+    ;; Default pass
+    true))
+
+
+;; --- TASK HELPERS ---
 (defn create-agent-task
-  "Create a new agent task"
   [command agent-type]
   (let [now (str (java.time.Instant/now))]
     {:id (str (java.util.UUID/randomUUID))
@@ -124,24 +167,11 @@ Focus on quality, correctness, and adherence to project requirements."}})
      :status :pending
      :original-command command
      :created-at now
-     :updated-at now
-     :result nil
-     :requires-review (= agent-type :coder-builder)}))
+     :updated-at now}))
 
-(defn create-agent-message
-  "Create an inter-agent message"
-  [from-agent to-agent message-type payload & {:keys [context requires-response]}]
-  {:from-agent from-agent
-   :to-agent to-agent
-   :message-type message-type
-   :payload payload
-   :context context
-   :requires-response (boolean requires-response)})
 
 (defn update-task-status
-  "Update the status of an agent task"
   [task new-status & {:keys [result]}]
   (-> task
-      (assoc :status new-status
-             :updated-at (str (java.time.Instant/now)))
+      (assoc :status new-status :updated-at (str (java.time.Instant/now)))
       (cond-> result (assoc :result result))))

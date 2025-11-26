@@ -5,25 +5,32 @@
          '[clojure.pprint :as pprint]
          '[clojure.string :as str])
 
+
 ;; Add src to classpath for our modules
 (require '[babashka.classpath :refer [add-classpath]])
 (add-classpath "src")
+
 
 ;; Load KC-X modules
 (require '[kcx.state :as state]
          '[kcx.dsl :as dsl]
          '[kcx.templates :as templates])
 
+
 ;; --- 1. CONFIG & STATE ---
 (def state-file (str (System/getProperty "user.home") "/.kcx/state.edn"))
 
-(defn load-state []
+
+(defn load-state
+  []
   (if (.exists (io/file state-file))
     (try (edn/read-string (slurp state-file))
          (catch Exception _ {:meta {:project "New" :status "Recovered"}}))
     {:meta {:project "New" :created (str (java.time.Instant/now))}}))
 
-(defn save-state [new-state-str]
+
+(defn save-state
+  [new-state-str]
   (try
     (let [data (edn/read-string new-state-str)]
       (io/make-parents state-file)
@@ -31,8 +38,10 @@
       "State updated successfully.")
     (catch Exception e (str "Error saving state: " (str e)))))
 
+
 ;; --- 2. THE COMPILER (Enhanced with Agent Templates) ---
 (def dsl-regex #"^:(\w+)(?:\s+@([\w\./-]+))?(?:\s+(.*))?")
+
 
 (defn compile-prompt
   "Compile a rich contextual prompt using agent templates"
@@ -71,8 +80,10 @@
 
       "Error: Invalid DSL syntax. Use :verb @target format")))
 
+
 ;; --- 3. HELP SYSTEM ---
-(defn get-kcx-help [topic]
+(defn get-kcx-help
+  [topic]
   (case topic
     "syntax" (str "KC-X DSL SYNTAX:\n\n"
                   ":verb @target +include -exclude\n\n"
@@ -108,8 +119,10 @@
          "and ensure agents use MCP tools correctly instead of just chatting.\n\n"
          "Built with ❤️ in Clojure | Agent Templates | MCP Protocol")))
 
+
 ;; --- 4. MCP HANDLERS ---
-(defn handle-request [req]
+(defn handle-request
+  [req]
   (let [method (get req "method")
         params (get req "params")
         args (get params "arguments")]
@@ -121,18 +134,17 @@
        :serverInfo {:name "kcx-bb" :version "1.0"}}
 
       "tools/list"
-      {:tools [
-               ;; Core KC-X Engine with Agent Templates
+      {:tools [;; Core KC-X Engine with Agent Templates
                {:name "kcx"
                 :description "The KC-X Agent Engine. Call this for ANY command starting with ':'.
 
-Examples:
-:plan @auth.clj         → Architect agent plans auth system
-:gen @hello.clj +main   → Coder agent writes hello world
-:review @auth.clj       → Reviewer agent checks code quality
-:remember 'Use JWT'     → Memory manager records decision
-
-Each agent has specific behavioral constraints and will use appropriate tools."
+                              Examples:
+                              :plan @auth.clj         → Architect agent plans auth system
+                              :gen @hello.clj +main   → Coder agent writes hello world
+                              :review @auth.clj       → Reviewer agent checks code quality
+                              :remember 'Use JWT'     → Memory manager records decision
+                              
+                              Each agent has specific behavioral constraints and will use appropriate tools."
                 :inputSchema {:type "object"
                               :properties {:command {:type "string"}}
                               :required ["command"]}}
@@ -194,8 +206,10 @@ Each agent has specific behavioral constraints and will use appropriate tools."
       ;; Default
       nil)))
 
+
 ;; --- 5. JSON-RPC LOOP ---
-(defn -main []
+(defn -main
+  []
   (binding [*out* (java.io.OutputStreamWriter. System/out)]
     (binding [*err* System/err]
       (println "🧠 KC-X Agent Template System Starting..."))
@@ -209,5 +223,6 @@ Each agent has specific behavioral constraints and will use appropriate tools."
               (println (json/generate-string {:jsonrpc "2.0" :id (get req "id") :result res}))))
           (catch Exception e
             (binding [*out* *err*] (println "JSON-RPC Error:" (str e)))))))))
+
 
 (-main)
