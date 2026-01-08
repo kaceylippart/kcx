@@ -13,9 +13,9 @@
   [{:keys [verb]}]
   (case verb
     ("proj" "switch" "status" "list" "new" "init") :controller
-    ("save" "clean" "remember" "forget" "context") :curator
+    ("save" "clean" "remember" "forget" "context" "prune" "promote" "demote" "delete") :curator
     ("plan" "arch" "design" "analyze") :architect
-    ("gen" "create" "edit" "refactor" "fix" "build" "code") :worker
+    ("gen" "create" "edit" "refactor" "fix" "build" "code" "debug") :worker
     ("test" "tdd") :tester
     ("review" "check" "lint" "audit") :reviewer
     :controller))
@@ -24,7 +24,7 @@
 (defn requires-workflow?
   "Determine if a command requires multi-agent workflow"
   [{:keys [verb]}]
-  (contains? #{"gen" "create" "edit" "refactor" "fix" "build" "test" "tdd"} verb))
+  (contains? #{"gen" "create" "edit" "refactor" "fix" "build" "test" "tdd" "debug" "review"} verb))
 
 
 (def agent-capabilities

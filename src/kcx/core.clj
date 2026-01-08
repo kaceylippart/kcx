@@ -15,10 +15,13 @@
   (log/log-tool-call! tool-name args)
   (let [result (case tool-name
                  "kcx_command"
-                 (let [cmd (get args "command")
-                       parsed (dsl/parse-command cmd)]
-                   (log/log! :debug "DSL PARSE" {:input cmd :parsed parsed})
-                   (orchestrator/execute-command parsed))
+                 (let [cmd (get args "command")]
+                   (log/log! :debug "COMMAND" {:input cmd})
+                   ;; Try XML system commands first, then DSL
+                   (or (orchestrator/execute-xml-command cmd)
+                       (let [parsed (dsl/parse-command cmd)]
+                         (log/log! :debug "DSL PARSE" {:parsed parsed})
+                         (orchestrator/execute-command parsed))))
 
                  "read_state"
                  (let [current-state (state/load-state)]
@@ -37,6 +40,7 @@
     (log/log-tool-result! tool-name result)
     result))
 
+
 (defn handle-request
   [req]
   (log/log-request! req)
@@ -51,10 +55,10 @@
 
                  "tools/list"
                  {:tools [{:name "kcx_command"
-                           :description "Execute a KCX DSL command for agent-driven workflows"
+                           :description "Execute a KCX command for agent-driven workflows"
                            :inputSchema {:type "object"
                                          :properties {:command {:type "string"
-                                                                :description "KCX DSL command (e.g., 'kcx:gen file:main.clj with:async')"}}
+                                                                :description "KCX command (e.g., 'kcx !fix @file.clj +error-handling')"}}
                                          :required ["command"]}}
                           {:name "read_state"
                            :description "Read the current KCX project state (memory bank)"

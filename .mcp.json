@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "kcx": {
+      "command": "/opt/homebrew/bin/bb",
+      "args": ["/Users/kacey.lippart/kcx/kcx.clj"],
+      "env": {}
+    }
+  }
+}

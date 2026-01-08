@@ -1,6 +1,8 @@
 (ns calculator-test
-  (:require [clojure.test :refer [deftest testing is]]
-            [calculator :refer :all]))
+  (:require
+    [calculator :refer :all]
+    [clojure.test :refer [deftest testing is]]))
+
 
 (deftest add-test
   (testing "addition"
@@ -8,15 +10,18 @@
     (is (= 0 (add -1 1)))
     (is (= -5 (add -2 -3)))))
 
+
 (deftest subtract-test
   (testing "subtraction"
     (is (= 1 (subtract 3 2)))
     (is (= -2 (subtract -1 1)))))
 
+
 (deftest multiply-test
   (testing "multiplication"
     (is (= 6 (multiply 2 3)))
     (is (= 0 (multiply 0 5)))))
+
 
 (deftest divide-test
   (testing "division"
@@ -25,6 +30,7 @@
   ;; TODO: This test will fail - divide-by-zero not handled
   #_(testing "divide by zero"
     (is (nil? (divide 1 0)))))
+
 
 (deftest calculate-test
   (testing "calculate dispatcher"

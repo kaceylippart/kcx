@@ -1,20 +1,31 @@
 (ns calculator
-  "A simple calculator with a bug for testing")
+  "A simple calculator with error handling")
 
-(defn add [a b]
+
+(defn add
+  [a b]
   (+ a b))
 
-(defn subtract [a b]
+
+(defn subtract
+  [a b]
   (- a b))
 
-(defn multiply [a b]
+
+(defn multiply
+  [a b]
   (* a b))
 
-;; BUG: Division doesn't handle divide-by-zero
-(defn divide [a b]
-  (/ a b))
 
-(defn calculate [op a b]
+(defn divide
+  [a b]
+  (if (zero? b)
+    (throw (ex-info "Division by zero" {:dividend a :divisor b}))
+    (/ a b)))
+
+
+(defn calculate
+  [op a b]
   (case op
     :add (add a b)
     :subtract (subtract a b)
