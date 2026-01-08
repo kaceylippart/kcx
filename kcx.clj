@@ -1,7 +1,8 @@
 #!/usr/bin/env bb
 
 (require '[babashka.classpath :refer [add-classpath]])
-(require '[kcx.core :as core])
-
 (add-classpath "src")
+
+(require '[kcx.core :as core])
 (core/start-server)
+ 

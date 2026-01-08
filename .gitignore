@@ -15,9 +15,16 @@ kcx_state.edn
 # Project registry and user data
 /.kcx/
 
+# Session logs (generated at runtime)
+/logs/
+
+# Memory bank (user project state)
+/memory-bank/
+
 # IDE and tooling
 .clj-kondo/.cache/
 .lsp/.cache/
+.cpcache/
 
 # Temporary files
 *.tmp

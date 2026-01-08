@@ -1,0 +1,8 @@
+{:paths ["src"]
+ :deps {cheshire/cheshire {:mvn/version "5.12.0"}}
+ :tasks {start (load-file "kcx.clj")
+
+         ;; Quick test for parsing without running the server
+         parse (do (require '[kcx.dsl])
+                   (clojure.pprint/pprint
+                    (kcx.dsl/parse-command (first *command-line-args*))))}}

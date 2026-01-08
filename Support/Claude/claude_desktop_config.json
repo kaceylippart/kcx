@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "kcx": {
-      "command": "/Users/kacey.lippart/kcx/target/release/kcx",
-      "args": []
-    }
-  }
-}
