@@ -53,6 +53,10 @@
                   :capabilities {:tools {}}
                   :serverInfo {:name "kcx" :version "1.0"}}
 
+                 ;; Notifications don't get responses
+                 "notifications/initialized" nil
+                 "notifications/cancelled" nil
+
                  "tools/list"
                  {:tools [{:name "kcx_command"
                            :description "Execute a KCX command for agent-driven workflows"
@@ -74,7 +78,8 @@
                  {:content [{:type "text"
                              :text (handle-tool-call (get params "name") args)}]}
 
-                 nil)]
+                 ;; Unknown method - log but don't respond
+                 (do (log/log! :warn "UNKNOWN METHOD" method) nil))]
     (when result
       (log/log-response! result))
     result))
@@ -84,16 +89,17 @@
   []
   (log/start-session!)
   (log/log! :info "SERVER" "KCX MCP Server starting...")
-  (binding [*out* (java.io.OutputStreamWriter. System/out)]
-    (try
-      (doseq [line (line-seq (java.io.BufferedReader. *in*))]
-        (when-let [req (try (json/parse-string line) (catch Exception e (log/log-error! "JSON parse error" e) nil))]
-          (try
-            (when-let [res (handle-request req)]
-              (let [response {:jsonrpc "2.0" :id (get req "id") :result res}]
-                (println (json/generate-string response))))
-            (catch Exception e
-              (log/log-error! "Request handling error" e)
-              (println (json/generate-string {:jsonrpc "2.0" :id (get req "id") :error {:code -32603 :message (str e)}}))))))
-      (finally
-        (log/end-session!)))))
+  (try
+    (doseq [line (line-seq (java.io.BufferedReader. *in*))]
+      (when-let [req (try (json/parse-string line) (catch Exception e (log/log-error! "JSON parse error" e) nil))]
+        (try
+          (when-let [res (handle-request req)]
+            (let [response {:jsonrpc "2.0" :id (get req "id") :result res}]
+              (println (json/generate-string response))
+              (flush)))
+          (catch Exception e
+            (log/log-error! "Request handling error" e)
+            (println (json/generate-string {:jsonrpc "2.0" :id (get req "id") :error {:code -32603 :message (str e)}}))
+            (flush)))))
+    (finally
+      (log/end-session!))))

@@ -1,9 +1,10 @@
 (ns kcx.orchestrator
-  "Workflow logic - returns structured instructions for deterministic agent execution"
+  "Workflow logic - spawns isolated Claude instances for autonomous work"
   (:require
     [clojure.string :as str]
     [kcx.agents :as agents]
-    [kcx.state :as state]))
+    [kcx.state :as state]
+    [kcx.worker :as worker]))
 
 
 (defonce workflow-state (atom {:active-tasks {}}))
@@ -168,9 +169,10 @@
       (case verb
         ;; Controller commands
         ("proj" "list" "status") (handle-controller cmd)
-        ;; Workflow commands - start new task
+        ;; Workflow commands - spawn autonomous agents
         (if (agents/requires-workflow? cmd)
-          (let [task (agents/create-agent-task cmd (agents/route-command cmd))]
-            (add-task task)
-            (execute-workflow (:id task) cmd))
+          (let [result (worker/execute-workflow cmd)]
+            (if (:success result)
+              "✓ WORKFLOW COMPLETE"
+              (str "✗ WORKFLOW FAILED at " (name (:phase result)))))
           (handle-controller cmd))))))
