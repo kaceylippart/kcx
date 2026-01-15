@@ -186,7 +186,3 @@ Each handoff uses XML tags for deterministic execution:
 <handoff task="uuid" to="reviewer"/>
 <done task="uuid"/>
 ```
-
-## License
-
-MIT
