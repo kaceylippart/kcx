@@ -1,3 +1,6 @@
+\**Project state: WIP*\*
+
+
 # KCX: Knowledge Context eXchange
 
 **Stack:** Clojure | Babashka | MCP Protocol | EDN State
