@@ -148,6 +148,58 @@ Add to your Claude Code MCP settings:
 }
 ```
 
+## Agent Spawning
+
+KCX spawns independent Claude instances for worker and reviewer agents. These run in isolated environments to avoid conflicts with the parent Claude session.
+
+### How It Works
+
+When executing workflows, KCX:
+1. Uses `env -i` to create a clean environment (no inherited vars)
+2. Passes only essential variables: `PATH`, `HOME`, `ANTHROPIC_API_KEY`
+3. Spawns Claude CLI with `--print` mode for non-interactive execution
+4. Restricts tools and permissions for safety
+
+### Configuration
+
+Customize agent behavior via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KCX_WORKER_MODEL` | `claude-sonnet-4-20250514` | Model for worker/reviewer agents |
+| `KCX_WORKER_TOOLS` | `Read,Write,Edit,Glob,Grep` | Tools available to agents |
+| `KCX_PERMISSION_MODE` | `acceptEdits` | Permission mode (`acceptEdits`, `bypassPermissions`) |
+| `CLAUDE_PATH` | Auto-detected | Path to Claude CLI binary |
+| `KCX_HOME` | `~/kcx` | KCX installation directory |
+
+### Example Configurations
+
+**Conservative (default):**
+```bash
+# Agents can read/write files, prompts for dangerous operations
+export KCX_PERMISSION_MODE="acceptEdits"
+export KCX_WORKER_TOOLS="Read,Write,Edit,Glob,Grep"
+```
+
+**Fully Autonomous:**
+```bash
+# Agents run without permission prompts (use with caution)
+export KCX_PERMISSION_MODE="bypassPermissions"
+export KCX_WORKER_TOOLS="Read,Write,Edit,Glob,Grep,Bash"
+```
+
+**Read-Only Reviewer:**
+```bash
+# For review-only workflows
+export KCX_WORKER_TOOLS="Read,Glob,Grep"
+```
+
+### Requirements
+
+- Claude CLI installed and in PATH (or set `CLAUDE_PATH`)
+- Valid `ANTHROPIC_API_KEY` environment variable
+- Babashka (bb) for running the MCP server
+
 ## Testing
 
 ```bash

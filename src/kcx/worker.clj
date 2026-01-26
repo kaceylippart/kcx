@@ -63,34 +63,83 @@
 
 
 (def home-dir (System/getProperty "user.home"))
-(def claude-path (str home-dir "/.claude/local/claude"))
+
+;; Find claude binary - check common locations
+(def claude-path
+  (or (System/getenv "CLAUDE_PATH")
+      (let [which-result (try
+                           (-> (p/shell {:out :string} "which" "claude")
+                               :out
+                               clojure.string/trim)
+                           (catch Exception _ nil))]
+        (when (and which-result (seq which-result))
+          which-result))
+      ;; Fallback locations
+      (str home-dir "/Library/pnpm/claude")
+      "claude"))
+
 ;; KCX_HOME should point to the kcx repo root
 (def kcx-home (or (System/getenv "KCX_HOME")
                   (str home-dir "/kcx")))
 (def playground-dir (str kcx-home "/playground"))
 
+;; ============================================================================
+;; Agent Spawn Configuration
+;; ============================================================================
+;; These can be overridden via environment variables for different setups
+
+(def worker-model
+  "Model for worker agents. Override with KCX_WORKER_MODEL env var."
+  (or (System/getenv "KCX_WORKER_MODEL") "claude-sonnet-4-20250514"))
+
+(def worker-tools
+  "Tools available to worker agents. Override with KCX_WORKER_TOOLS env var."
+  (or (System/getenv "KCX_WORKER_TOOLS") "Read,Write,Edit,Glob,Grep"))
+
+(def worker-permission-mode
+  "Permission mode for workers. Override with KCX_PERMISSION_MODE env var.
+   Options: acceptEdits (default, safer), bypassPermissions (autonomous)"
+  (or (System/getenv "KCX_PERMISSION_MODE") "acceptEdits"))
+
 
 (defn spawn-claude
-  "Spawn a Claude instance with the given prompt, return output"
-  [prompt & {:keys [timeout-ms working-dir]
+  "Spawn a Claude instance with the given prompt, return output.
+
+   Uses env -i for clean environment isolation - only passes essential vars.
+   This ensures the spawned Claude isn't affected by parent session config
+   (e.g., Bedrock vs direct API, nested Claude detection, etc.)."
+  [prompt & {:keys [timeout-ms working-dir tools permission-mode]
              :or {timeout-ms 300000
-                  working-dir playground-dir}}]
+                  working-dir playground-dir
+                  tools worker-tools
+                  permission-mode worker-permission-mode}}]
   (log/log! :info "SPAWN CLAUDE" {:prompt-length (count prompt)
                                   :working-dir working-dir
-                                  :timeout-ms timeout-ms})
+                                  :timeout-ms timeout-ms
+                                  :claude-path claude-path
+                                  :model worker-model
+                                  :tools tools
+                                  :permission-mode permission-mode})
   (try
-    ;; Use shell with explicit /dev/null for stdin to prevent hanging
-    (let [result (p/shell {:out :string
+    ;; Use env -i for clean spawn - only pass essential vars
+    ;; This isolates the child from parent Claude session config
+    (let [env-vars (str "PATH=\"$PATH\" "
+                        "HOME=\"$HOME\" "
+                        "ANTHROPIC_API_KEY=\"${ANTHROPIC_API_KEY:-}\" "
+                        "ANTHROPIC_MODEL=\"" worker-model "\" "
+                        "KCX_WORKER=true ")
+          cmd (str "env -i " env-vars
+                   claude-path
+                   " --print"
+                   " --permission-mode " permission-mode
+                   " --tools '" tools "'"
+                   " -p " (pr-str prompt)
+                   " < /dev/null")
+          _ (log/log! :debug "SPAWN CMD" {:cmd cmd})
+          result (p/shell {:out :string
                            :err :string
-                           :dir working-dir
-                           :extra-env {"KCX_WORKER" "true"}}
-                          "sh" "-c"
-                          (str claude-path
-                               " --print"
-                               " --tools 'Read,Glob,Grep,Edit'"
-                               " --permission-mode acceptEdits"
-                               " -p " (pr-str prompt)
-                               " < /dev/null"))]
+                           :dir working-dir}
+                          "sh" "-c" cmd)]
       (log/log! :info "CLAUDE COMPLETE" {:exit (:exit result)
                                          :output-length (count (:out result))})
       {:success (zero? (:exit result))
