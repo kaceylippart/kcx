@@ -24,6 +24,48 @@
     (/ a b)))
 
 
+(defn exponent
+  "Calculates a raised to the power of b (a^b).
+  
+  Parameters:
+  - a (number): The base number
+  - b (number): The exponent
+  
+  Returns:
+  - number: The result of a^b
+  
+  Throws:
+  - ex-info: When base is zero and exponent is negative (division by zero)
+  - ex-info: When base is negative and exponent is non-integer (complex result not supported)
+  - ex-info: When result would cause arithmetic overflow"
+  [a b]
+  (cond
+    ;; Handle 0^negative = division by zero
+    (and (zero? a) (neg? b))
+    (throw (ex-info "Zero raised to negative power is undefined" 
+                    {:base a :exponent b :error-type :zero-base-negative-exponent}))
+    
+    ;; Handle negative base with non-integer exponent (would result in complex number)
+    (and (neg? a) (not (integer? b)))
+    (throw (ex-info "Negative base with non-integer exponent not supported" 
+                    {:base a :exponent b :error-type :negative-base-non-integer}))
+    
+    ;; Standard calculation
+    :else
+    (let [result (Math/pow a b)]
+      ;; Check for overflow/underflow
+      (cond
+        (Double/isInfinite result)
+        (throw (ex-info "Exponent operation resulted in overflow" 
+                        {:base a :exponent b :result result :error-type :overflow}))
+        
+        (Double/isNaN result)
+        (throw (ex-info "Exponent operation resulted in NaN" 
+                        {:base a :exponent b :result result :error-type :invalid-result}))
+        
+        :else result))))
+
+
 (defn calculate
   [op a b]
   (case op
@@ -31,4 +73,5 @@
     :subtract (subtract a b)
     :multiply (multiply a b)
     :divide (divide a b)
+    :exponent (exponent a b)
     (throw (ex-info "Unknown operation" {:op op}))))
