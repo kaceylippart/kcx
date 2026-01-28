@@ -66,12 +66,35 @@
         :else result))))
 
 
+(defn add-modulo
+  "Adds two numbers and returns the result modulo a third number (a + b) mod c.
+
+  Parameters:
+  - a (number): First number to add
+  - b (number): Second number to add
+  - c (number): Modulo divisor
+
+  Returns:
+  - number: The result of (a + b) mod c
+
+  Throws:
+  - ex-info: When modulo divisor is zero (division by zero)"
+  [a b c]
+  (if (zero? c)
+    (throw (ex-info "Modulo by zero is undefined"
+                    {:addend1 a :addend2 b :modulo c :error-type :modulo-by-zero}))
+    (mod (+ a b) c)))
+
+
 (defn calculate
-  [op a b]
+  [op a b & args]
   (case op
     :add (add a b)
     :subtract (subtract a b)
     :multiply (multiply a b)
     :divide (divide a b)
     :exponent (exponent a b)
+    :add-modulo (if (seq args)
+                  (add-modulo a b (first args))
+                  (throw (ex-info "add-modulo requires third argument (modulo)" {:op op})))
     (throw (ex-info "Unknown operation" {:op op}))))

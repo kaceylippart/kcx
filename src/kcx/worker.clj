@@ -163,19 +163,43 @@
 ;; ============================================================================
 ;; Clean Output Helpers
 ;; ============================================================================
+;; Status lines are accumulated in an atom and returned with the workflow result
+;; so they can be included in the MCP response (since MCP captures stdout/stderr)
+
+(def ^:dynamic *status-lines* nil)
 
 (defn status!
-  "Print a clean status line to stderr (bypasses MCP stdout capture)."
+  "Record a status line. Accumulated for MCP response."
   [& parts]
-  (binding [*out* *err*]
-    (println (str/join " " (map str parts)))))
+  (let [line (str/join " " (map str parts))]
+    (when *status-lines*
+      (swap! *status-lines* conj line))
+    ;; Also try stderr in case it works in some contexts
+    (binding [*out* *err*]
+      (println line))))
 
 (defn detail!
-  "Print detail line to stderr. Only shown in verbose mode."
+  "Record a detail line. Only in verbose mode."
   [& parts]
   (when (verbose?)
-    (binding [*out* *err*]
-      (println (str "  " (str/join " " (map str parts)))))))
+    (let [line (str "  " (str/join " " (map str parts)))]
+      (when *status-lines*
+        (swap! *status-lines* conj line))
+      (binding [*out* *err*]
+        (println line)))))
+
+(defn with-status-capture
+  "Execute f while capturing status lines. Returns [result status-lines]."
+  [f]
+  (binding [*status-lines* (atom [])]
+    (let [result (f)]
+      [result @*status-lines*])))
+
+(defn format-status-lines
+  "Format captured status lines for display."
+  [lines]
+  (when (seq lines)
+    (str/join "\n" lines)))
 
 (defn format-files-changed
   "Format file changes compactly: '3 files' or 'file.clj'"

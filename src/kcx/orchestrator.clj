@@ -204,20 +204,26 @@
         ("proj" "list" "status") (handle-controller cmd)
         ;; TDD/Test workflow - use tester agent
         ("test" "tdd")
-        (let [result (worker/execute-tester-workflow cmd)]
-          (if (:success result)
-            "✓ TDD WORKFLOW COMPLETE"
-            (str "✗ TDD WORKFLOW FAILED at " (name (:phase result)))))
+        (let [[result lines] (worker/with-status-capture
+                               #(worker/execute-tester-workflow cmd))
+              status (if (:success result)
+                       "✓ TDD WORKFLOW COMPLETE"
+                       (str "✗ TDD WORKFLOW FAILED at " (name (:phase result))))]
+          (str (worker/format-status-lines lines) "\n" status))
         ;; Architect workflow - specs then implementation
         ("plan" "arch" "design" "analyze")
-        (let [result (worker/execute-architect-workflow cmd)]
-          (if (:success result)
-            "✓ ARCHITECT WORKFLOW COMPLETE"
-            (str "✗ ARCHITECT WORKFLOW FAILED at " (name (:phase result)))))
+        (let [[result lines] (worker/with-status-capture
+                               #(worker/execute-architect-workflow cmd))
+              status (if (:success result)
+                       "✓ ARCHITECT WORKFLOW COMPLETE"
+                       (str "✗ ARCHITECT WORKFLOW FAILED at " (name (:phase result))))]
+          (str (worker/format-status-lines lines) "\n" status))
         ;; Other workflow commands - spawn autonomous agents
         (if (agents/requires-workflow? cmd)
-          (let [result (worker/execute-workflow cmd)]
-            (if (:success result)
-              "✓ WORKFLOW COMPLETE"
-              (str "✗ WORKFLOW FAILED at " (name (:phase result)))))
+          (let [[result lines] (worker/with-status-capture
+                                 #(worker/execute-workflow cmd))
+                status (if (:success result)
+                         "✓ WORKFLOW COMPLETE"
+                         (str "✗ WORKFLOW FAILED at " (name (:phase result))))]
+            (str (worker/format-status-lines lines) "\n" status))
           (handle-controller cmd))))))

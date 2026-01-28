@@ -72,3 +72,38 @@
     (is (= 8.0 (calculate :exponent 2 3)))
     (is (= 0.25 (calculate :exponent 2 -2)))
     (is (= 1.0 (calculate :exponent 5 0)))))
+
+
+(deftest add-modulo-test
+  (testing "basic add-modulo operations"
+    (is (= 1 (add-modulo 3 5 7)))    ; (3 + 5) mod 7 = 8 mod 7 = 1
+    (is (= 0 (add-modulo 4 6 5)))    ; (4 + 6) mod 5 = 10 mod 5 = 0
+    (is (= 0 (add-modulo 7 8 3)))    ; (7 + 8) mod 3 = 15 mod 3 = 0
+    (is (= 3 (add-modulo 10 5 4))))  ; (10 + 5) mod 4 = 15 mod 4 = 3
+
+  (testing "edge cases"
+    (is (= 0 (add-modulo 0 0 5)))    ; (0 + 0) mod 5 = 0
+    (is (= 1 (add-modulo 1 0 3)))    ; (1 + 0) mod 3 = 1
+    (is (= 0 (add-modulo 5 5 1)))    ; (5 + 5) mod 1 = 0 (any number mod 1 = 0)
+    (is (= 4 (add-modulo -3 7 5))))  ; (-3 + 7) mod 5 = 4
+
+  (testing "negative numbers"
+    (is (= 4 (add-modulo -3 7 5)))   ; (-3 + 7) mod 5 = 4
+    (is (= 2 (add-modulo -5 -2 3)))) ; (-5 + -2) mod 3 = -7 mod 3 = 2 in Clojure
+
+  (testing "error conditions"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Modulo by zero is undefined"
+                          (add-modulo 5 3 0)))))
+
+
+(deftest calculate-add-modulo-test
+  (testing "add-modulo through calculate dispatcher"
+    (is (= 1 (calculate :add-modulo 3 5 7)))
+    (is (= 0 (calculate :add-modulo 4 6 5)))
+    (is (= 3 (calculate :add-modulo 10 5 4))))
+
+  (testing "add-modulo error handling in dispatcher"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"add-modulo requires third argument"
+                          (calculate :add-modulo 3 5)))))
