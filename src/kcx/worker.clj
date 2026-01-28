@@ -153,6 +153,37 @@
    Note: acceptEdits doesn't work well in non-interactive mode - blocks on prompts that can't be answered."
   (or (System/getenv "KCX_PERMISSION_MODE") "bypassPermissions"))
 
+(def output-mode
+  "Output verbosity. Override with KCX_OUTPUT_MODE env var.
+   Options: minimal (clean progress lines), verbose (full details)"
+  (or (System/getenv "KCX_OUTPUT_MODE") "minimal"))
+
+(defn verbose? [] (= output-mode "verbose"))
+
+;; ============================================================================
+;; Clean Output Helpers
+;; ============================================================================
+
+(defn status!
+  "Print a clean status line. Always shown."
+  [& parts]
+  (println (str/join " " (map str parts))))
+
+(defn detail!
+  "Print detail line. Only shown in verbose mode."
+  [& parts]
+  (when (verbose?)
+    (println (str "  " (str/join " " (map str parts))))))
+
+(defn format-files-changed
+  "Format file changes compactly: '3 files' or 'file.clj'"
+  [files]
+  (let [n (count files)]
+    (cond
+      (zero? n) "no files"
+      (= 1 n) (first files)
+      :else (str n " files"))))
+
 
 (defn spawn-claude
   "Spawn a Claude instance with the given prompt, return output.
@@ -526,8 +557,6 @@
   [cmd feedback]
   (loop [attempt 1
          tester-feedback nil]
-    (println (str "  → WORKER" (when (> attempt 1) (str " (attempt " attempt ")"))))
-
     ;; Combine external feedback with tester feedback
     (let [combined-feedback (cond
                               (and feedback tester-feedback)
@@ -535,28 +564,40 @@
                               feedback feedback
                               tester-feedback (str "TESTER: " tester-feedback)
                               :else nil)
-          worker-result (run-worker cmd :reviewer-feedback combined-feedback :iteration attempt)]
-      (println (str "    " (:summary worker-result)))
+          _ (status! "→ WORKER" (when (> attempt 1) (str "(attempt " attempt ")")))
+          worker-result (run-worker cmd :reviewer-feedback combined-feedback :iteration attempt)
+          files (format-files-changed (:files-changed worker-result))]
 
       (if (= "failed" (:status worker-result))
-        {:success false :phase :worker :worker worker-result :attempts attempt}
-
-        ;; Tester validation
         (do
-          (println "  → TESTER Validating...")
+          (status! "✗ WORKER failed")
+          (detail! (:summary worker-result))
+          {:success false :phase :worker :worker worker-result :attempts attempt})
+
+        (do
+          (status! "  WORKER edited" files)
+          (detail! (:summary worker-result))
+
+          ;; Tester validation
+          (status! "→ TESTER validating...")
           (let [tester-result (run-tester-validation worker-result cmd)]
-            (println (str "    " (str/upper-case (:verdict tester-result)) ": " (:feedback tester-result)))
 
             (if (= "pass" (:verdict tester-result))
-              ;; Tests pass
-              {:success true :worker worker-result :tester tester-result :attempts attempt}
+              (do
+                (status! "  TESTER passed")
+                (detail! (:feedback tester-result))
+                {:success true :worker worker-result :tester tester-result :attempts attempt})
 
               ;; Tests fail - retry or give up
               (if (< attempt max-workflow-iterations)
                 (do
-                  (println (str "  ↻ TESTER FAILED - Worker retry " (inc attempt) "/" max-workflow-iterations))
+                  (status! "  TESTER failed - retrying" (str "(" (inc attempt) "/" max-workflow-iterations ")"))
+                  (detail! (:feedback tester-result))
                   (recur (inc attempt) (:feedback tester-result)))
-                {:success false :phase :tester :worker worker-result :tester tester-result :attempts attempt}))))))))
+                (do
+                  (status! "✗ TESTER failed after" attempt "attempts")
+                  (detail! (:feedback tester-result))
+                  {:success false :phase :tester :worker worker-result :tester tester-result :attempts attempt})))))))))
 
 
 (defn execute-workflow
@@ -568,36 +609,34 @@
    Returns {:success bool :worker {...} :tester {...} :reviewer {...} :iterations {...}}"
   [cmd]
   (log/log! :info "WORKFLOW START" cmd)
-  (println (str "→ WORKFLOW " (str/upper-case (:verb cmd))
-                (when-let [t (:target cmd)] (str " @" t))))
+  (status! "━━━" (str/upper-case (:verb cmd)) (when-let [t (:target cmd)] (str "@" t)) "━━━")
 
   (loop [cycle 1
          reviewer-feedback nil]
     (when (> cycle 1)
-      (println (str "  ↻ CYCLE " cycle "/" max-workflow-iterations)))
+      (status! "↻ CYCLE" (str cycle "/" max-workflow-iterations)))
 
     ;; Run Worker → Tester inner loop
     (let [wt-result (run-worker-tester-loop cmd reviewer-feedback)]
 
       (if-not (:success wt-result)
         ;; Worker or Tester failed
-        (do
-          (println (str "✗ " (str/upper-case (name (:phase wt-result))) " FAILED"))
-          (assoc wt-result :cycle cycle))
+        (assoc wt-result :cycle cycle)
 
         ;; Worker/Tester passed - proceed to Reviewer
         (do
-          (println "  → REVIEWER")
+          (status! "→ REVIEWER reviewing...")
           (let [review-result (run-reviewer (:worker wt-result))]
-            (println (str "    " (str/upper-case (:verdict review-result)) ": " (:feedback review-result)))
 
             (cond
               ;; Approved
               (= "approve" (:verdict review-result))
               (do
+                (status! "  REVIEWER approved")
+                (detail! (:feedback review-result))
                 (run-curator cmd (:worker wt-result) review-result)
-                (println "  → CURATOR Memory updated")
-                (println "✓ DONE")
+                (status! "→ CURATOR updated memory")
+                (status! "✓ DONE")
                 {:success true
                  :worker (:worker wt-result)
                  :tester (:tester wt-result)
@@ -608,13 +647,14 @@
               (and (contains? #{"reject" "needs_revision"} (:verdict review-result))
                    (< cycle max-workflow-iterations))
               (do
-                (println "  ↻ REVIEWER REJECTED - restarting cycle")
+                (status! "  REVIEWER rejected - restarting cycle")
+                (detail! (:feedback review-result))
                 (recur (inc cycle) (str "REVIEWER: " (:feedback review-result))))
 
               ;; Max cycles reached
               :else
               (do
-                (println (str "✗ REJECTED after " cycle " cycles - manual intervention needed"))
+                (status! "✗ REJECTED after" cycle "cycles")
                 {:success false
                  :phase :reviewer
                  :worker (:worker wt-result)
@@ -636,31 +676,32 @@
    Returns {:success bool :tester {...} :worker {...} :reviewer {...} :iterations int}"
   [cmd]
   (log/log! :info "TDD WORKFLOW START" cmd)
-  (println (str "→ TDD WORKFLOW " (str/upper-case (:verb cmd))
-                (when-let [t (:target cmd)] (str " @" t))))
+  (status! "━━━ TDD" (str/upper-case (:verb cmd)) (when-let [t (:target cmd)] (str "@" t)) "━━━")
 
   ;; Phase 1: TESTER writes tests
-  (println "→ TESTER Writing tests...")
+  (status! "→ TESTER writing tests...")
   (let [tester-result (run-tester cmd)]
-    (println (str "  " (:summary tester-result)))
 
     (if (= "failed" (:status tester-result))
       (do
-        (println "✗ TESTER FAILED")
+        (status! "✗ TESTER failed")
+        (detail! (:summary tester-result))
         {:success false :phase :tester :result tester-result})
 
       ;; Phase 2: Verify tests fail (Red)
-      (let [test-run-1 (run-tests-command playground-dir)]
-        (println (str "→ TEST RUN (expecting failures): "
-                      (if (:success test-run-1) "PASS ⚠️" "FAIL ✓")))
+      (do
+        (status! "  TESTER wrote" (format-files-changed (:files-changed tester-result)))
+        (detail! (:summary tester-result))
+        (let [test-run-1 (run-tests-command playground-dir)]
+          (status! "→ TEST RUN (red phase)" (if (:success test-run-1) "pass ⚠️" "fail ✓"))
 
         ;; We expect tests to fail initially (TDD Red phase)
         ;; If they pass, that's unexpected but we continue
 
-        ;; Phase 3: WORKER implements
-        (loop [iteration 1
-               feedback nil]
-          (println (str "→ WORKER Implementing" (when (> iteration 1) (str " (attempt " iteration ")"))))
+          ;; Phase 3: WORKER implements
+          (loop [iteration 1
+                 feedback nil]
+            (status! "→ WORKER implementing" (when (> iteration 1) (str "(attempt " iteration ")")))
 
           (let [worker-prompt (if feedback
                                 ;; Retry with feedback
@@ -677,24 +718,25 @@
 
             (if-not (:success worker-result)
               (do
-                (println "✗ WORKER FAILED")
+                (status! "✗ WORKER failed")
                 {:success false :phase :worker :result worker-result :iterations iteration})
 
               (let [parsed-worker (parse-worker-result (:output worker-result))]
-                (println (str "  " (:summary parsed-worker)))
+                (status! "  WORKER edited" (format-files-changed (:files-changed parsed-worker)))
+                (detail! (:summary parsed-worker))
 
                 ;; Phase 4: Run tests again
                 (let [test-run-2 (run-tests-command playground-dir)]
-                  (println (str "→ TEST RUN: " (if (:success test-run-2) "PASS ✓" "FAIL")))
+                  (status! "→ TEST RUN (green phase)" (if (:success test-run-2) "pass ✓" "fail"))
 
                   (if-not (:success test-run-2)
                     ;; Tests still failing - retry worker
                     (if (< iteration max-workflow-iterations)
                       (do
-                        (println (str "↻ RETRY (tests failing, attempt " (inc iteration) "/" max-workflow-iterations ")"))
+                        (status! "  Tests failing - retrying" (str "(" (inc iteration) "/" max-workflow-iterations ")"))
                         (recur (inc iteration) (str "Tests still failing:\n" (subs (:output test-run-2) 0 (min 500 (count (:output test-run-2)))))))
                       (do
-                        (println (str "✗ TESTS FAILED after " iteration " attempts"))
+                        (status! "✗ TESTS failed after" iteration "attempts")
                         {:success false
                          :phase :tests
                          :tester tester-result
@@ -702,42 +744,45 @@
                          :iterations iteration}))
 
                     ;; Tests passing - proceed to reviewer
-                    (let [review-result (run-reviewer (assoc parsed-worker
-                                                             :files-changed (concat (:files-changed tester-result)
-                                                                                    (:files-changed parsed-worker))))]
-                      (println (str "→ REVIEWER " (str/upper-case (:verdict review-result))))
-                      (println (str "  " (:feedback review-result)))
+                    (do
+                      (status! "→ REVIEWER reviewing...")
+                      (let [review-result (run-reviewer (assoc parsed-worker
+                                                               :files-changed (concat (:files-changed tester-result)
+                                                                                      (:files-changed parsed-worker))))]
 
-                      (cond
-                        ;; Approved
-                        (= "approve" (:verdict review-result))
-                        (do
-                          (run-curator cmd parsed-worker review-result)
-                          (println "→ CURATOR Memory updated")
-                          (println "✓ TDD WORKFLOW COMPLETE")
-                          {:success true
-                           :tester tester-result
-                           :worker parsed-worker
-                           :reviewer review-result
-                           :iterations iteration})
+                        (cond
+                          ;; Approved
+                          (= "approve" (:verdict review-result))
+                          (do
+                            (status! "  REVIEWER approved")
+                            (detail! (:feedback review-result))
+                            (run-curator cmd parsed-worker review-result)
+                            (status! "→ CURATOR updated memory")
+                            (status! "✓ DONE")
+                            {:success true
+                             :tester tester-result
+                             :worker parsed-worker
+                             :reviewer review-result
+                             :iterations iteration})
 
-                        ;; Rejected but can retry
-                        (and (contains? #{"reject" "needs_revision"} (:verdict review-result))
-                             (< iteration max-workflow-iterations))
-                        (do
-                          (println (str "↻ RETRY (reviewer feedback, attempt " (inc iteration) ")"))
-                          (recur (inc iteration) (:feedback review-result)))
+                          ;; Rejected but can retry
+                          (and (contains? #{"reject" "needs_revision"} (:verdict review-result))
+                               (< iteration max-workflow-iterations))
+                          (do
+                            (status! "  REVIEWER rejected - retrying" (str "(attempt " (inc iteration) ")"))
+                            (detail! (:feedback review-result))
+                            (recur (inc iteration) (:feedback review-result)))
 
-                        ;; Rejected and max iterations
-                        :else
-                        (do
-                          (println (str "✗ REJECTED after " iteration " attempts"))
-                          {:success false
-                           :phase :reviewer
-                           :tester tester-result
-                           :worker parsed-worker
-                           :reviewer review-result
-                           :iterations iteration})))))))))))))
+                          ;; Rejected and max iterations
+                          :else
+                          (do
+                            (status! "✗ REJECTED after" iteration "attempts")
+                            {:success false
+                             :phase :reviewer
+                             :tester tester-result
+                             :worker parsed-worker
+                             :reviewer review-result
+                             :iterations iteration})))))))))))))))
 
 
 (defn execute-architect-workflow
@@ -751,24 +796,26 @@
    Returns {:success bool :architect {...} :worker {...} :tester {...} :reviewer {...} :iterations {...}}"
   [cmd]
   (log/log! :info "ARCHITECT WORKFLOW START" cmd)
-  (println (str "→ ARCHITECT WORKFLOW " (str/upper-case (:verb cmd))
-                (when-let [t (:target cmd)] (str " @" t))))
+  (status! "━━━ ARCHITECT" (str/upper-case (:verb cmd)) (when-let [t (:target cmd)] (str "@" t)) "━━━")
 
   ;; Phase 1: ARCHITECT creates specs
-  (println "→ ARCHITECT Creating specifications...")
+  (status! "→ ARCHITECT creating specifications...")
   (let [architect-result (run-architect cmd)]
-    (println (str "  " (:summary architect-result)))
 
     (if (= "failed" (:status architect-result))
       (do
-        (println "✗ ARCHITECT FAILED")
+        (status! "✗ ARCHITECT failed")
+        (detail! (:summary architect-result))
         {:success false :phase :architect :result architect-result})
 
       ;; Phase 2-4: Worker → Tester → Reviewer cycle
-      (loop [cycle 1
-             reviewer-feedback nil]
-        (when (> cycle 1)
-          (println (str "  ↻ CYCLE " cycle "/" max-workflow-iterations)))
+      (do
+        (status! "  ARCHITECT wrote" (format-files-changed (:files-changed architect-result)))
+        (detail! (:summary architect-result))
+        (loop [cycle 1
+               reviewer-feedback nil]
+          (when (> cycle 1)
+            (status! "↻ CYCLE" (str cycle "/" max-workflow-iterations)))
 
         ;; Combine architect context with any reviewer feedback
         (let [context (str "ARCHITECT SPEC:\n" (:summary architect-result)
@@ -778,25 +825,24 @@
 
           (if-not (:success wt-result)
             ;; Worker or Tester failed
-            (do
-              (println (str "✗ " (str/upper-case (name (:phase wt-result))) " FAILED"))
-              (assoc wt-result :architect architect-result :cycle cycle))
+            (assoc wt-result :architect architect-result :cycle cycle)
 
             ;; Worker/Tester passed - proceed to Reviewer
             (do
-              (println "  → REVIEWER")
+              (status! "→ REVIEWER reviewing...")
               (let [review-result (run-reviewer (assoc (:worker wt-result)
                                                        :files-changed (concat (:files-changed architect-result)
                                                                               (:files-changed (:worker wt-result)))))]
-                (println (str "    " (str/upper-case (:verdict review-result)) ": " (:feedback review-result)))
 
                 (cond
                   ;; Approved
                   (= "approve" (:verdict review-result))
                   (do
+                    (status! "  REVIEWER approved")
+                    (detail! (:feedback review-result))
                     (run-curator cmd (:worker wt-result) review-result)
-                    (println "  → CURATOR Memory updated")
-                    (println "✓ ARCHITECT WORKFLOW COMPLETE")
+                    (status! "→ CURATOR updated memory")
+                    (status! "✓ DONE")
                     {:success true
                      :architect architect-result
                      :worker (:worker wt-result)
@@ -808,18 +854,19 @@
                   (and (contains? #{"reject" "needs_revision"} (:verdict review-result))
                        (< cycle max-workflow-iterations))
                   (do
-                    (println "  ↻ REVIEWER REJECTED - restarting cycle")
+                    (status! "  REVIEWER rejected - restarting cycle")
+                    (detail! (:feedback review-result))
                     (recur (inc cycle) (:feedback review-result)))
 
                   ;; Max cycles reached
                   :else
                   (do
-                    (println (str "✗ REJECTED after " cycle " cycles - manual intervention needed"))
+                    (status! "✗ REJECTED after" cycle "cycles")
                     {:success false
                      :phase :reviewer
                      :architect architect-result
                      :worker (:worker wt-result)
                      :tester (:tester wt-result)
                      :reviewer review-result
-                     :iterations {:cycle cycle :worker-attempts (:attempts wt-result)}}))))))))))
+                     :iterations {:cycle cycle :worker-attempts (:attempts wt-result)}})))))))))))
 
