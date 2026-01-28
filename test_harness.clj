@@ -203,6 +203,30 @@
       (fn []
         (let [r (route {:verb "gen" :target "new.clj"})]
           {:pass (= :worker r)
+           :routing r})))
+
+    (test-case :agents "Route test to tester"
+      (fn []
+        (let [r (route {:verb "test" :target "calc.clj"})]
+          {:pass (= :tester r)
+           :routing r})))
+
+    (test-case :agents "Route tdd to tester"
+      (fn []
+        (let [r (route {:verb "tdd" :target "api.clj"})]
+          {:pass (= :tester r)
+           :routing r})))
+
+    (test-case :agents "Route plan to architect"
+      (fn []
+        (let [r (route {:verb "plan" :target "feature"})]
+          {:pass (= :architect r)
+           :routing r})))
+
+    (test-case :agents "Route design to architect"
+      (fn []
+        (let [r (route {:verb "design" :target "system"})]
+          {:pass (= :architect r)
            :routing r})))))
 
 ;; ============================================================================
@@ -253,6 +277,83 @@
           {:pass (and (:success r)
                       (str/includes? (:output r) "GLOB_DONE"))
            :result r})))))))
+
+;; ============================================================================
+;; Component Tests: Tester Agent
+;; ============================================================================
+
+(defn test-tester []
+  (println "\n🧪 Tester Agent Tests")
+  (require 'kcx.worker)
+  (let [build-tester-prompt (requiring-resolve 'kcx.worker/build-tester-prompt)
+        parse-tester-result (requiring-resolve 'kcx.worker/parse-tester-result)]
+
+    (test-case :tester "Build tester prompt"
+      (fn []
+        (let [p (build-tester-prompt {:verb "test" :target "calc.clj" :includes ["edge-cases"]})]
+          {:pass (and (str/includes? p "TESTER")
+                      (str/includes? p "calc.clj")
+                      (str/includes? p "TESTER_RESULT"))
+           :prompt p})))
+
+    (test-case :tester "Build TDD prompt"
+      (fn []
+        (let [p (build-tester-prompt {:verb "tdd" :target "api.clj"})]
+          {:pass (and (str/includes? p "TDD")
+                      (str/includes? p "TESTER_RESULT"))
+           :prompt p})))
+
+    (test-case :tester "Parse tester result - success"
+      (fn []
+        (let [r (parse-tester-result "output\nTESTER_RESULT|success|test/a.clj|Added tests\nmore")]
+          {:pass (and (= "success" (:status r))
+                      (= ["test/a.clj"] (:files-changed r)))
+           :parsed r})))
+
+    (test-case :tester "Parse tester result - no match"
+      (fn []
+        (let [r (parse-tester-result "random output")]
+          {:pass (= "unknown" (:status r))
+           :parsed r})))))
+
+;; ============================================================================
+;; Component Tests: Architect Agent
+;; ============================================================================
+
+(defn test-architect []
+  (println "\n📐 Architect Agent Tests")
+  (require 'kcx.worker)
+  (let [build-architect-prompt (requiring-resolve 'kcx.worker/build-architect-prompt)
+        parse-architect-result (requiring-resolve 'kcx.worker/parse-architect-result)]
+
+    (test-case :architect "Build plan prompt"
+      (fn []
+        (let [p (build-architect-prompt {:verb "plan" :target "api.clj" :includes ["REST"]})]
+          {:pass (and (str/includes? p "ARCHITECT")
+                      (str/includes? p "plan")
+                      (str/includes? p "ARCHITECT_RESULT"))
+           :prompt p})))
+
+    (test-case :architect "Build design prompt"
+      (fn []
+        (let [p (build-architect-prompt {:verb "design" :target "system"})]
+          {:pass (and (str/includes? p "ARCHITECT")
+                      (str/includes? p "architecture")
+                      (str/includes? p "ARCHITECT_RESULT"))
+           :prompt p})))
+
+    (test-case :architect "Parse architect result - success"
+      (fn []
+        (let [r (parse-architect-result "output\nARCHITECT_RESULT|success|docs/spec.md|Created spec\nmore")]
+          {:pass (and (= "success" (:status r))
+                      (= ["docs/spec.md"] (:files-changed r)))
+           :parsed r})))
+
+    (test-case :architect "Parse architect result - no match"
+      (fn []
+        (let [r (parse-architect-result "random output")]
+          {:pass (= "unknown" (:status r))
+           :parsed r})))))
 
 ;; ============================================================================
 ;; Integration Tests: Full Workflow
@@ -428,6 +529,8 @@
     (when (run? :state) (test-state))
     (when (run? :agents) (test-agents))
     (when (run? :mcp) (test-mcp))
+    (when (run? :tester) (test-tester))
+    (when (run? :architect) (test-architect))
     (when (run? :worker) (test-worker))
     (when (run? :workflow) (test-workflow)))
 

@@ -285,3 +285,87 @@
   "Delete a memory entry by target name"
   [state target]
   (update state :memory #(vec (remove (fn [e] (= (:target e) target)) %))))
+
+
+;; =============================================================================
+;; Memory Retrieval (for informing agent decisions)
+;; =============================================================================
+
+(defn get-entries-for-target
+  "Get all memory entries related to a specific target file"
+  [state target]
+  (when target
+    (->> (:memory state [])
+         (filter #(or (= (:target %) target)
+                      (str/includes? (str (:target %)) target)
+                      (str/includes? target (str (:target %)))))
+         (sort-by #(or (:created-at %) 0) >))))
+
+
+(defn get-recent-entries
+  "Get the N most recent memory entries"
+  [state & {:keys [limit] :or {limit 10}}]
+  (->> (:memory state [])
+       (sort-by #(or (:created-at %) 0) >)
+       (take limit)))
+
+
+(defn get-high-priority-entries
+  "Get critical and high priority entries (architectural decisions, patterns)"
+  [state]
+  (->> (:memory state [])
+       (filter #(contains? #{:critical :high} (:priority %)))
+       (sort-by entry-priority-value >)))
+
+
+(defn get-related-entries
+  "Get entries related to a command - by target, action, or keywords"
+  [state {:keys [verb target includes]}]
+  (let [keywords (set (concat [verb target] includes))
+        matches? (fn [entry]
+                   (let [entry-text (str (:action entry) " " (:target entry) " " (:description entry))]
+                     (some #(and % (str/includes? (str/lower-case entry-text) (str/lower-case (str %)))) keywords)))]
+    (->> (:memory state [])
+         (filter matches?)
+         (sort-by entry-priority-value >)
+         (take 10))))
+
+
+(defn format-memory-for-prompt
+  "Format memory entries into a context string for agent prompts"
+  [entries & {:keys [max-entries header] :or {max-entries 5 header "MEMORY CONTEXT"}}]
+  (when (seq entries)
+    (let [limited (take max-entries entries)
+          formatted (for [{:keys [action target description priority date]} limited]
+                      (str "• [" (or (some-> priority name str/upper-case) "NORMAL") "] "
+                           action " " target
+                           (when description (str ": " description))
+                           (when date (str " (" date ")"))))]
+      (str "═══ " header " ═══\n"
+           (str/join "\n" formatted)
+           "\n═══════════════════════════\n"))))
+
+
+(defn build-memory-context
+  "Build comprehensive memory context for a command.
+   Returns a formatted string to inject into agent prompts."
+  [cmd]
+  (let [state (load-state)
+        target-entries (get-entries-for-target state (:target cmd))
+        related-entries (get-related-entries state cmd)
+        high-priority (get-high-priority-entries state)
+
+        ;; Dedupe and combine, prioritizing target-specific
+        all-entries (->> (concat target-entries related-entries high-priority)
+                         (distinct)
+                         (take 8))]
+    (when (seq all-entries)
+      (str
+        (when (seq target-entries)
+          (format-memory-for-prompt target-entries
+                                    :max-entries 3
+                                    :header (str "HISTORY FOR " (:target cmd))))
+        (when (seq high-priority)
+          (format-memory-for-prompt high-priority
+                                    :max-entries 3
+                                    :header "KEY DECISIONS & PATTERNS"))))))

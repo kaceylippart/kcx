@@ -1,5 +1,17 @@
 (ns kcx.orchestrator
-  "Workflow logic - spawns isolated Claude instances for autonomous work"
+  "Workflow orchestration with two modes:
+
+   1. AUTONOMOUS MODE (default):
+      Commands like !fix, !test, !plan trigger worker/execute-*-workflow
+      which spawns sub-agents and runs the entire chain autonomously.
+
+   2. MANUAL MODE (for debugging/step-through):
+      Use build-*-instruction functions to get XML-tagged instructions.
+      Claude Code follows <do> steps, then passes <handoff> tags back
+      to drive the workflow step-by-step. Useful for debugging.
+
+   The autonomous mode is used by default. Manual mode is available
+   via the instruction-building functions for special cases."
   (:require
     [clojure.string :as str]
     [kcx.agents :as agents]
@@ -25,6 +37,10 @@
   (swap! workflow-state update-in [:active-tasks id] f))
 
 
+;; ============================================================================
+;; Controller Commands (non-workflow)
+;; ============================================================================
+
 (defn handle-controller
   [cmd]
   (case (:verb cmd)
@@ -34,6 +50,12 @@
     ;; Default
     (str "→ " (:verb cmd) " (no handler)")))
 
+
+;; ============================================================================
+;; Manual Mode: XML Instruction Builders
+;; ============================================================================
+;; These functions build step-by-step instructions with XML handoff tags.
+;; Used when Claude Code drives the workflow manually (debugging/step-through).
 
 (defn build-worker-instruction
   "Instruction for worker agent (gen, edit, fix, debug, etc.)"
@@ -90,6 +112,10 @@
       "<file>" state-file "</file>\n"
       "<done task=\"" task-id "\"/>")))
 
+
+;; ============================================================================
+;; Manual Mode: XML Parsing & Handoff Routing
+;; ============================================================================
 
 (defn parse-xml-handoff
   "Parse XML handoff tag: <handoff task=\"uuid\" to=\"agent\" [feedback=\"...\"]/>
@@ -160,8 +186,15 @@
     :else nil))
 
 
+;; ============================================================================
+;; Autonomous Mode: Main Command Execution
+;; ============================================================================
+;; This is the default mode. Commands trigger complete autonomous workflows
+;; that spawn sub-agents and run to completion without manual intervention.
+
 (defn execute-command
-  "Execute a parsed DSL command (from user input)"
+  "Execute a parsed DSL command (from user input).
+   Uses autonomous mode by default - spawns sub-agents for complete workflows."
   [cmd]
   (if (nil? cmd)
     "ERROR: Invalid command. Use: kcx !verb @target +include -exclude"
@@ -169,7 +202,19 @@
       (case verb
         ;; Controller commands
         ("proj" "list" "status") (handle-controller cmd)
-        ;; Workflow commands - spawn autonomous agents
+        ;; TDD/Test workflow - use tester agent
+        ("test" "tdd")
+        (let [result (worker/execute-tester-workflow cmd)]
+          (if (:success result)
+            "✓ TDD WORKFLOW COMPLETE"
+            (str "✗ TDD WORKFLOW FAILED at " (name (:phase result)))))
+        ;; Architect workflow - specs then implementation
+        ("plan" "arch" "design" "analyze")
+        (let [result (worker/execute-architect-workflow cmd)]
+          (if (:success result)
+            "✓ ARCHITECT WORKFLOW COMPLETE"
+            (str "✗ ARCHITECT WORKFLOW FAILED at " (name (:phase result)))))
+        ;; Other workflow commands - spawn autonomous agents
         (if (agents/requires-workflow? cmd)
           (let [result (worker/execute-workflow cmd)]
             (if (:success result)

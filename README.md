@@ -169,6 +169,8 @@ Customize agent behavior via environment variables:
 | `KCX_WORKER_MODEL` | `claude-sonnet-4-20250514` | Model for worker/reviewer agents |
 | `KCX_WORKER_TOOLS` | `Read,Write,Edit,Glob,Grep` | Tools available to agents |
 | `KCX_PERMISSION_MODE` | `bypassPermissions` | Permission mode (`bypassPermissions` for autonomous, `acceptEdits` for prompts) |
+| `KCX_MAX_ITERATIONS` | `3` | Max worker retries on rejection |
+| `KCX_TEST_CMD` | `bb -m test-runner` | Command to run tests (for TDD workflow) |
 | `CLAUDE_PATH` | Auto-detected | Path to Claude CLI binary |
 | `KCX_HOME` | `~/kcx` | KCX installation directory |
 
@@ -226,18 +228,50 @@ kcx/
 
 ## Workflow
 
+KCX supports two execution modes:
+
+### Autonomous Mode (Default)
+
 When you run a command like `kcx !fix @calculator.clj +error-handling`:
 
 1. **DSL Parser** extracts verb, target, and constraints
 2. **Agent Router** determines which agent handles the command
-3. **Orchestrator** returns structured instructions
-4. **Worker** executes the task
+3. **Orchestrator** spawns autonomous sub-agents
+4. **Worker** executes the task (with rejection loops if needed)
 5. **Reviewer** validates the changes
 6. **Curator** updates the memory bank
 
-Each handoff uses XML tags for deterministic execution:
+The entire workflow runs to completion without manual intervention.
+
+### Workflow Types
+
+| Command Type | Workflow | Agents |
+|--------------|----------|--------|
+| `!fix`, `!gen`, `!edit`, etc. | Worker Flow | WORKER → TESTER → REVIEWER → CURATOR |
+| `!test`, `!tdd` | TDD Flow | TESTER (write) → WORKER → TESTER (validate) → REVIEWER → CURATOR |
+| `!plan`, `!design`, `!arch` | Architect Flow | ARCHITECT → WORKER → TESTER → REVIEWER → CURATOR |
+
+### Worker → Tester Validation Loop
+
+All workflows include a Worker → Tester validation loop:
+
+1. **Worker** performs the task
+2. **Tester** validates with tests
+   - If tests fail → feedback to Worker, retry (up to `KCX_MAX_ITERATIONS`)
+   - If tests pass → proceed to Reviewer
+3. **Reviewer** validates the implementation
+   - If rejected → back to step 1 (Worker → Tester cycle)
+   - If approved → Curator
+
+This ensures all code changes have test coverage before review.
+
+### Manual Mode (Debugging)
+
+For step-by-step execution, the orchestrator can return XML-tagged instructions:
 
 ```xml
 <handoff task="uuid" to="reviewer"/>
 <done task="uuid"/>
 ```
+
+This mode is useful for debugging workflows.

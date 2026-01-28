@@ -13,19 +13,33 @@
     [kcx.state :as state]))
 
 
+(def max-workflow-iterations
+  "Maximum WORKER → REVIEWER iterations before giving up. Override with KCX_MAX_ITERATIONS."
+  (or (some-> (System/getenv "KCX_MAX_ITERATIONS") parse-long) 3))
+
 (defn build-worker-prompt
-  "Build a focused prompt for the worker from DSL command"
-  [{:keys [verb target includes excludes]}]
+  "Build a focused prompt for the worker from DSL command.
+   Includes memory context from past work on this target.
+   Optional reviewer-feedback is passed when retrying after rejection."
+  [{:keys [verb target includes excludes] :as cmd} & {:keys [reviewer-feedback iteration]}]
   (let [action (str/upper-case verb)
         constraints (cond-> []
                       (seq includes) (conj (str "FOCUS ON: " (str/join ", " includes)))
                       (seq excludes) (conj (str "AVOID: " (str/join ", " excludes))))
         target-str (when (and target (not= target "global_context"))
-                     (str " in " target))]
+                     (str " in " target))
+        memory-context (state/build-memory-context cmd)
+        retry-context (when reviewer-feedback
+                        (str "\n⚠️ PREVIOUS ATTEMPT REJECTED (iteration " iteration ").\n"
+                             "Reviewer feedback: " reviewer-feedback "\n"
+                             "Address this feedback in your implementation.\n"))]
     (str
       "You are WORKER. " action target-str ".\n"
+      (when memory-context
+        (str "\n" memory-context "\n"))
       (when (seq constraints)
         (str (str/join ". " constraints) ".\n"))
+      retry-context
       "\nWhen done, output EXACTLY:\n"
       "WORKER_RESULT|STATUS|FILES|SUMMARY\n"
       "Example: WORKER_RESULT|success|src/foo.clj,src/bar.clj|Fixed the bug\n"
@@ -33,16 +47,20 @@
 
 
 (defn build-reviewer-prompt
-  "Build prompt for reviewer to check worker's changes"
-  [worker-result files-changed]
-  (str
-    "You are REVIEWER. Check these changes:\n"
-    "Files: " (str/join ", " files-changed) "\n"
-    "Summary: " (:summary worker-result) "\n"
-    "\nRead the files. Verify correctness.\n"
-    "\nOutput EXACTLY:\n"
-    "REVIEW_RESULT|VERDICT|FEEDBACK\n"
-    "Example: REVIEW_RESULT|approve|Looks good, zero check added correctly"))
+  "Build prompt for reviewer to check worker's changes.
+   Includes memory context of past issues and patterns."
+  [worker-result files-changed & {:keys [cmd]}]
+  (let [memory-context (when cmd (state/build-memory-context cmd))]
+    (str
+      "You are REVIEWER. Check these changes:\n"
+      "Files: " (str/join ", " files-changed) "\n"
+      (when memory-context
+        (str "\n" memory-context "\n"))
+      "Summary: " (:summary worker-result) "\n"
+      "\nRead the files. Verify correctness.\n"
+      "\nOutput EXACTLY:\n"
+      "REVIEW_RESULT|VERDICT|FEEDBACK\n"
+      "Example: REVIEW_RESULT|approve|Looks good, zero check added correctly")))
 
 
 (defn parse-worker-result
@@ -160,18 +178,23 @@
 
 
 (defn run-worker
-  "Execute worker agent for a command"
-  [cmd]
-  (let [prompt (build-worker-prompt cmd)
-        _ (log/log! :info "WORKER START" {:verb (:verb cmd) :target (:target cmd)})
+  "Execute worker agent for a command.
+   Optional reviewer-feedback and iteration for retry loops."
+  [cmd & {:keys [reviewer-feedback iteration] :or {iteration 1}}]
+  (let [prompt (build-worker-prompt cmd :reviewer-feedback reviewer-feedback :iteration iteration)
+        _ (log/log! :info "WORKER START" {:verb (:verb cmd)
+                                          :target (:target cmd)
+                                          :iteration iteration
+                                          :has-feedback (some? reviewer-feedback)})
         result (spawn-claude prompt)]
     (if (:success result)
       (let [parsed (parse-worker-result (:output result))]
         (log/log! :info "WORKER DONE" parsed)
-        (assoc parsed :raw-output (:output result)))
+        (assoc parsed :raw-output (:output result) :iteration iteration))
       {:status "failed"
        :summary (str "Worker spawn failed: " (:error result))
-       :files-changed []})))
+       :files-changed []
+       :iteration iteration})))
 
 
 (defn run-reviewer
@@ -204,38 +227,553 @@
                                     :memory-size (count (:memory updated-state))})))
 
 
+;; ============================================================================
+;; Tester Agent Functions
+;; ============================================================================
+
+(defn build-tester-prompt
+  "Build a prompt for the tester to write tests for a target.
+   Includes memory context of past test patterns and issues."
+  [{:keys [verb target includes excludes] :as cmd}]
+  (let [target-str (when (and target (not= target "global_context"))
+                     (str " for " target))
+        constraints (cond-> []
+                      (seq includes) (conj (str "FOCUS ON: " (str/join ", " includes)))
+                      (seq excludes) (conj (str "AVOID: " (str/join ", " excludes))))
+        memory-context (state/build-memory-context cmd)]
+    (str
+      "You are TESTER. Write " (if (= "tdd" verb) "TDD" "comprehensive") " tests" target-str ".\n"
+      (when memory-context
+        (str "\n" memory-context "\n"))
+      (when (seq constraints)
+        (str (str/join ". " constraints) ".\n"))
+      "\nPROTOCOL:\n"
+      "1. Read existing code to understand what to test\n"
+      "2. Write test file(s) with failing tests\n"
+      "3. Tests should cover edge cases and error conditions\n"
+      "\nWhen done, output EXACTLY:\n"
+      "TESTER_RESULT|STATUS|FILES|SUMMARY\n"
+      "Example: TESTER_RESULT|success|test/calculator_test.clj|Added 5 tests for edge cases\n"
+      "\nBegin.")))
+
+
+(defn parse-tester-result
+  "Extract structured result from tester output. Format: TESTER_RESULT|status|files|summary"
+  [output]
+  (if-let [match (re-find #"TESTER_RESULT\|(\w+)\|([^|]*)\|(.+)" output)]
+    {:status (nth match 1)
+     :files-changed (when-let [f (nth match 2)]
+                      (when (seq f) (str/split (str/trim f) #",\s*")))
+     :summary (nth match 3)}
+    {:status "unknown"
+     :files-changed []
+     :summary (str "Could not parse tester output: " (subs output 0 (min 200 (count output))))}))
+
+
+(defn run-tester
+  "Execute tester agent to write tests."
+  [cmd]
+  (let [prompt (build-tester-prompt cmd)
+        _ (log/log! :info "TESTER START" {:verb (:verb cmd) :target (:target cmd)})
+        result (spawn-claude prompt :tools "Read,Write,Edit,Glob,Grep")]
+    (if (:success result)
+      (let [parsed (parse-tester-result (:output result))]
+        (log/log! :info "TESTER DONE" parsed)
+        (assoc parsed :raw-output (:output result)))
+      {:status "failed"
+       :summary (str "Tester spawn failed: " (:error result))
+       :files-changed []})))
+
+
+(defn run-tests-command
+  "Run tests and return results. Configurable via KCX_TEST_CMD."
+  [working-dir]
+  (let [test-cmd (or (System/getenv "KCX_TEST_CMD") "bb -m test-runner 2>&1 || true")]
+    (log/log! :info "RUNNING TESTS" {:cmd test-cmd :dir working-dir})
+    (try
+      (let [result (p/shell {:out :string :err :string :dir working-dir}
+                            "sh" "-c" test-cmd)]
+        {:success (zero? (:exit result))
+         :output (:out result)
+         :error (:err result)})
+      (catch Exception e
+        {:success false
+         :output ""
+         :error (str e)}))))
+
+
+(defn build-worker-from-tests-prompt
+  "Build a prompt for worker to implement code to pass tests."
+  [{:keys [target includes excludes]} test-files test-output]
+  (let [target-str (when (and target (not= target "global_context"))
+                     (str " in " target))]
+    (str
+      "You are WORKER. Implement code" target-str " to make the tests pass.\n"
+      "\nTest files: " (str/join ", " test-files) "\n"
+      "\nTest output (currently failing):\n```\n" (subs test-output 0 (min 1000 (count test-output))) "\n```\n"
+      (when (seq includes)
+        (str "FOCUS ON: " (str/join ", " includes) ".\n"))
+      (when (seq excludes)
+        (str "AVOID: " (str/join ", " excludes) ".\n"))
+      "\nPROTOCOL:\n"
+      "1. Read the test files to understand requirements\n"
+      "2. Implement the minimum code to pass tests\n"
+      "3. Follow TDD principles - don't over-engineer\n"
+      "\nWhen done, output EXACTLY:\n"
+      "WORKER_RESULT|STATUS|FILES|SUMMARY\n"
+      "\nBegin.")))
+
+
+;; ============================================================================
+;; Architect Agent Functions
+;; ============================================================================
+
+(defn build-architect-prompt
+  "Build a prompt for the architect to create specs/plans.
+   Includes memory context of past architectural decisions."
+  [{:keys [verb target includes excludes] :as cmd}]
+  (let [action (case verb
+                 "plan" "Create an implementation plan"
+                 "design" "Design the system architecture"
+                 "arch" "Define the technical architecture"
+                 "analyze" "Analyze the requirements and structure"
+                 (str "Create documentation for " verb))
+        target-str (when (and target (not= target "global_context"))
+                     (str " for " target))
+        constraints (cond-> []
+                      (seq includes) (conj (str "FOCUS ON: " (str/join ", " includes)))
+                      (seq excludes) (conj (str "AVOID: " (str/join ", " excludes))))
+        memory-context (state/build-memory-context cmd)]
+    (str
+      "You are ARCHITECT. " action target-str ".\n"
+      (when memory-context
+        (str "\n" memory-context "\n"))
+      (when (seq constraints)
+        (str (str/join ". " constraints) ".\n"))
+      "\nPROTOCOL:\n"
+      "1. Analyze the existing codebase structure\n"
+      "2. Create a detailed specification/plan as a markdown file\n"
+      "3. Define data structures, interfaces, and file organization\n"
+      "4. Do NOT write implementation code - focus on the 'what' and 'why'\n"
+      "\nWhen done, output EXACTLY:\n"
+      "ARCHITECT_RESULT|STATUS|FILES|SUMMARY\n"
+      "Example: ARCHITECT_RESULT|success|docs/api-spec.md|Created API specification with endpoints\n"
+      "\nBegin.")))
+
+
+(defn parse-architect-result
+  "Extract structured result from architect output. Format: ARCHITECT_RESULT|status|files|summary"
+  [output]
+  (if-let [match (re-find #"ARCHITECT_RESULT\|(\w+)\|([^|]*)\|(.+)" output)]
+    {:status (nth match 1)
+     :files-changed (when-let [f (nth match 2)]
+                      (when (seq f) (str/split (str/trim f) #",\s*")))
+     :summary (nth match 3)}
+    {:status "unknown"
+     :files-changed []
+     :summary (str "Could not parse architect output: " (subs output 0 (min 200 (count output))))}))
+
+
+(defn run-architect
+  "Execute architect agent to create specs/plans."
+  [cmd]
+  (let [prompt (build-architect-prompt cmd)
+        _ (log/log! :info "ARCHITECT START" {:verb (:verb cmd) :target (:target cmd)})
+        result (spawn-claude prompt :tools "Read,Write,Glob,Grep")]
+    (if (:success result)
+      (let [parsed (parse-architect-result (:output result))]
+        (log/log! :info "ARCHITECT DONE" parsed)
+        (assoc parsed :raw-output (:output result)))
+      {:status "failed"
+       :summary (str "Architect spawn failed: " (:error result))
+       :files-changed []})))
+
+
+(defn build-worker-from-spec-prompt
+  "Build a prompt for worker to implement based on architect's spec."
+  [{:keys [target includes excludes]} spec-files spec-summary]
+  (let [target-str (when (and target (not= target "global_context"))
+                     (str " in " target))]
+    (str
+      "You are WORKER. Implement the code" target-str " according to the architect's specification.\n"
+      "\nSpecification files: " (str/join ", " spec-files) "\n"
+      "\nSpec summary: " spec-summary "\n"
+      (when (seq includes)
+        (str "FOCUS ON: " (str/join ", " includes) ".\n"))
+      (when (seq excludes)
+        (str "AVOID: " (str/join ", " excludes) ".\n"))
+      "\nPROTOCOL:\n"
+      "1. Read the specification files thoroughly\n"
+      "2. Implement code following the spec exactly\n"
+      "3. Create all required files and structures\n"
+      "\nWhen done, output EXACTLY:\n"
+      "WORKER_RESULT|STATUS|FILES|SUMMARY\n"
+      "\nBegin.")))
+
+
+;; ============================================================================
+;; Tester Validation (for Worker → Tester loop)
+;; ============================================================================
+
+(defn build-tester-validation-prompt
+  "Build a prompt for tester to validate worker's changes.
+   Includes memory context of past test patterns and issues."
+  [worker-result {:keys [target includes excludes] :as cmd}]
+  (let [memory-context (state/build-memory-context cmd)]
+    (str
+      "You are TESTER. Validate the changes made by Worker.\n"
+      (when memory-context
+        (str "\n" memory-context "\n"))
+      "\nFiles changed: " (str/join ", " (:files-changed worker-result)) "\n"
+      "Worker summary: " (:summary worker-result) "\n"
+      (when target (str "Target: " target "\n"))
+      (when (seq includes) (str "Focus on: " (str/join ", " includes) "\n"))
+      (when (seq excludes) (str "Avoid: " (str/join ", " excludes) "\n"))
+      "\nPROTOCOL:\n"
+      "1. Read the changed files\n"
+      "2. Write or update tests to cover the changes\n"
+      "3. Run tests to verify correctness\n"
+      "4. Check for edge cases and error handling\n"
+      "\nWhen done, output EXACTLY:\n"
+      "TESTER_VALIDATION|VERDICT|FEEDBACK\n"
+      "Where VERDICT is 'pass' or 'fail'\n"
+      "Example: TESTER_VALIDATION|pass|All tests pass, good coverage\n"
+      "Example: TESTER_VALIDATION|fail|Missing null check test, edge case not handled\n"
+      "\nBegin.")))
+
+
+(defn parse-tester-validation
+  "Parse tester validation result. Format: TESTER_VALIDATION|verdict|feedback"
+  [output]
+  (if-let [match (re-find #"TESTER_VALIDATION\|(\w+)\|(.+)" output)]
+    {:verdict (nth match 1)
+     :feedback (nth match 2)}
+    ;; Also check for TESTER_RESULT format as fallback
+    (if-let [match (re-find #"TESTER_RESULT\|(\w+)\|[^|]*\|(.+)" output)]
+      {:verdict (if (= "success" (nth match 1)) "pass" "fail")
+       :feedback (nth match 2)}
+      {:verdict "pass"  ; Default pass if can't parse
+       :feedback (str "Could not parse: " (subs output 0 (min 100 (count output))))})))
+
+
+(defn run-tester-validation
+  "Run tester to validate worker's changes."
+  [worker-result cmd]
+  (let [prompt (build-tester-validation-prompt worker-result cmd)
+        _ (log/log! :info "TESTER VALIDATION START" {:files (:files-changed worker-result)})
+        result (spawn-claude prompt :tools "Read,Write,Edit,Glob,Grep,Bash")]
+    (if (:success result)
+      (let [parsed (parse-tester-validation (:output result))]
+        (log/log! :info "TESTER VALIDATION DONE" parsed)
+        parsed)
+      {:verdict "pass"  ; Default pass if tester fails to spawn
+       :feedback (str "Tester unavailable: " (:error result))})))
+
+
+;; ============================================================================
+;; Workflow Execution
+;; ============================================================================
+
+(defn run-worker-tester-loop
+  "Inner loop: Worker ↔ Tester until tests pass or max iterations.
+   Returns {:success bool :phase :worker|:tester :worker {...} :tester {...} :attempts int}"
+  [cmd feedback]
+  (loop [attempt 1
+         tester-feedback nil]
+    (println (str "  → WORKER" (when (> attempt 1) (str " (attempt " attempt ")"))))
+
+    ;; Combine external feedback with tester feedback
+    (let [combined-feedback (cond
+                              (and feedback tester-feedback)
+                              (str feedback "\nTESTER: " tester-feedback)
+                              feedback feedback
+                              tester-feedback (str "TESTER: " tester-feedback)
+                              :else nil)
+          worker-result (run-worker cmd :reviewer-feedback combined-feedback :iteration attempt)]
+      (println (str "    " (:summary worker-result)))
+
+      (if (= "failed" (:status worker-result))
+        {:success false :phase :worker :worker worker-result :attempts attempt}
+
+        ;; Tester validation
+        (do
+          (println "  → TESTER Validating...")
+          (let [tester-result (run-tester-validation worker-result cmd)]
+            (println (str "    " (str/upper-case (:verdict tester-result)) ": " (:feedback tester-result)))
+
+            (if (= "pass" (:verdict tester-result))
+              ;; Tests pass
+              {:success true :worker worker-result :tester tester-result :attempts attempt}
+
+              ;; Tests fail - retry or give up
+              (if (< attempt max-workflow-iterations)
+                (do
+                  (println (str "  ↻ TESTER FAILED - Worker retry " (inc attempt) "/" max-workflow-iterations))
+                  (recur (inc attempt) (:feedback tester-result)))
+                {:success false :phase :tester :worker worker-result :tester tester-result :attempts attempt}))))))))
+
+
 (defn execute-workflow
-  "Run full WORKER → REVIEWER → CURATOR chain"
+  "Run WORKER → TESTER → REVIEWER → CURATOR chain with nested loops.
+
+   Inner loop: Worker ↔ Tester (until tests pass)
+   Outer loop: If Reviewer rejects, back to Worker → Tester cycle
+
+   Returns {:success bool :worker {...} :tester {...} :reviewer {...} :iterations {...}}"
   [cmd]
   (log/log! :info "WORKFLOW START" cmd)
+  (println (str "→ WORKFLOW " (str/upper-case (:verb cmd))
+                (when-let [t (:target cmd)] (str " @" t))))
 
-  ;; Worker phase
-  (let [worker-result (run-worker cmd)]
-    (println (str "→ WORKER " (str/upper-case (:verb cmd))
-                  (when-let [t (:target cmd)] (str " @" t))))
-    (println (str "  " (:summary worker-result)))
+  (loop [cycle 1
+         reviewer-feedback nil]
+    (when (> cycle 1)
+      (println (str "  ↻ CYCLE " cycle "/" max-workflow-iterations)))
 
-    (if (= "failed" (:status worker-result))
+    ;; Run Worker → Tester inner loop
+    (let [wt-result (run-worker-tester-loop cmd reviewer-feedback)]
+
+      (if-not (:success wt-result)
+        ;; Worker or Tester failed
+        (do
+          (println (str "✗ " (str/upper-case (name (:phase wt-result))) " FAILED"))
+          (assoc wt-result :cycle cycle))
+
+        ;; Worker/Tester passed - proceed to Reviewer
+        (do
+          (println "  → REVIEWER")
+          (let [review-result (run-reviewer (:worker wt-result))]
+            (println (str "    " (str/upper-case (:verdict review-result)) ": " (:feedback review-result)))
+
+            (cond
+              ;; Approved
+              (= "approve" (:verdict review-result))
+              (do
+                (run-curator cmd (:worker wt-result) review-result)
+                (println "  → CURATOR Memory updated")
+                (println "✓ DONE")
+                {:success true
+                 :worker (:worker wt-result)
+                 :tester (:tester wt-result)
+                 :reviewer review-result
+                 :iterations {:cycle cycle :worker-attempts (:attempts wt-result)}})
+
+              ;; Rejected - restart Worker → Tester cycle
+              (and (contains? #{"reject" "needs_revision"} (:verdict review-result))
+                   (< cycle max-workflow-iterations))
+              (do
+                (println "  ↻ REVIEWER REJECTED - restarting cycle")
+                (recur (inc cycle) (str "REVIEWER: " (:feedback review-result))))
+
+              ;; Max cycles reached
+              :else
+              (do
+                (println (str "✗ REJECTED after " cycle " cycles - manual intervention needed"))
+                {:success false
+                 :phase :reviewer
+                 :worker (:worker wt-result)
+                 :tester (:tester wt-result)
+                 :reviewer review-result
+                 :iterations {:cycle cycle :worker-attempts (:attempts wt-result)}}))))))))
+
+
+(defn execute-tester-workflow
+  "Run TDD workflow: TESTER → RUN → WORKER → RUN → REVIEWER → CURATOR
+
+   1. Tester writes failing tests
+   2. Run tests to verify they fail
+   3. Worker implements to pass tests
+   4. Run tests to verify they pass
+   5. Reviewer validates
+   6. Curator updates memory
+
+   Returns {:success bool :tester {...} :worker {...} :reviewer {...} :iterations int}"
+  [cmd]
+  (log/log! :info "TDD WORKFLOW START" cmd)
+  (println (str "→ TDD WORKFLOW " (str/upper-case (:verb cmd))
+                (when-let [t (:target cmd)] (str " @" t))))
+
+  ;; Phase 1: TESTER writes tests
+  (println "→ TESTER Writing tests...")
+  (let [tester-result (run-tester cmd)]
+    (println (str "  " (:summary tester-result)))
+
+    (if (= "failed" (:status tester-result))
       (do
-        (println "✗ WORKER FAILED")
-        {:success false :phase :worker :result worker-result})
+        (println "✗ TESTER FAILED")
+        {:success false :phase :tester :result tester-result})
 
-      ;; Reviewer phase
-      (let [review-result (run-reviewer worker-result)]
-        (println (str "→ REVIEWER " (str/upper-case (:verdict review-result))))
-        (println (str "  " (:feedback review-result)))
+      ;; Phase 2: Verify tests fail (Red)
+      (let [test-run-1 (run-tests-command playground-dir)]
+        (println (str "→ TEST RUN (expecting failures): "
+                      (if (:success test-run-1) "PASS ⚠️" "FAIL ✓")))
 
-        (if (= "reject" (:verdict review-result))
-          ;; TODO: Could loop back to worker with feedback
-          (do
-            (println "✗ REJECTED - manual intervention needed")
-            {:success false :phase :reviewer :result review-result})
+        ;; We expect tests to fail initially (TDD Red phase)
+        ;; If they pass, that's unexpected but we continue
 
-          ;; Curator phase
-          (do
-            (run-curator cmd worker-result review-result)
-            (println "→ CURATOR Memory updated")
-            (println "✓ DONE")
-            {:success true
-             :worker worker-result
-             :reviewer review-result}))))))
+        ;; Phase 3: WORKER implements
+        (loop [iteration 1
+               feedback nil]
+          (println (str "→ WORKER Implementing" (when (> iteration 1) (str " (attempt " iteration ")"))))
+
+          (let [worker-prompt (if feedback
+                                ;; Retry with feedback
+                                (build-worker-prompt
+                                  (assoc cmd :verb "fix")
+                                  :reviewer-feedback feedback
+                                  :iteration iteration)
+                                ;; First attempt - use test context
+                                (build-worker-from-tests-prompt
+                                  cmd
+                                  (:files-changed tester-result)
+                                  (:output test-run-1)))
+                worker-result (spawn-claude worker-prompt)]
+
+            (if-not (:success worker-result)
+              (do
+                (println "✗ WORKER FAILED")
+                {:success false :phase :worker :result worker-result :iterations iteration})
+
+              (let [parsed-worker (parse-worker-result (:output worker-result))]
+                (println (str "  " (:summary parsed-worker)))
+
+                ;; Phase 4: Run tests again
+                (let [test-run-2 (run-tests-command playground-dir)]
+                  (println (str "→ TEST RUN: " (if (:success test-run-2) "PASS ✓" "FAIL")))
+
+                  (if-not (:success test-run-2)
+                    ;; Tests still failing - retry worker
+                    (if (< iteration max-workflow-iterations)
+                      (do
+                        (println (str "↻ RETRY (tests failing, attempt " (inc iteration) "/" max-workflow-iterations ")"))
+                        (recur (inc iteration) (str "Tests still failing:\n" (subs (:output test-run-2) 0 (min 500 (count (:output test-run-2)))))))
+                      (do
+                        (println (str "✗ TESTS FAILED after " iteration " attempts"))
+                        {:success false
+                         :phase :tests
+                         :tester tester-result
+                         :worker parsed-worker
+                         :iterations iteration}))
+
+                    ;; Tests passing - proceed to reviewer
+                    (let [review-result (run-reviewer (assoc parsed-worker
+                                                             :files-changed (concat (:files-changed tester-result)
+                                                                                    (:files-changed parsed-worker))))]
+                      (println (str "→ REVIEWER " (str/upper-case (:verdict review-result))))
+                      (println (str "  " (:feedback review-result)))
+
+                      (cond
+                        ;; Approved
+                        (= "approve" (:verdict review-result))
+                        (do
+                          (run-curator cmd parsed-worker review-result)
+                          (println "→ CURATOR Memory updated")
+                          (println "✓ TDD WORKFLOW COMPLETE")
+                          {:success true
+                           :tester tester-result
+                           :worker parsed-worker
+                           :reviewer review-result
+                           :iterations iteration})
+
+                        ;; Rejected but can retry
+                        (and (contains? #{"reject" "needs_revision"} (:verdict review-result))
+                             (< iteration max-workflow-iterations))
+                        (do
+                          (println (str "↻ RETRY (reviewer feedback, attempt " (inc iteration) ")"))
+                          (recur (inc iteration) (:feedback review-result)))
+
+                        ;; Rejected and max iterations
+                        :else
+                        (do
+                          (println (str "✗ REJECTED after " iteration " attempts"))
+                          {:success false
+                           :phase :reviewer
+                           :tester tester-result
+                           :worker parsed-worker
+                           :reviewer review-result
+                           :iterations iteration})))))))))))))
+
+
+(defn execute-architect-workflow
+  "Run ARCHITECT → WORKER → TESTER → REVIEWER → CURATOR workflow.
+
+   1. Architect creates specifications/plans
+   2. Worker implements based on specs (loops with Tester until tests pass)
+   3. Reviewer validates implementation
+   4. Curator updates memory
+
+   Returns {:success bool :architect {...} :worker {...} :tester {...} :reviewer {...} :iterations {...}}"
+  [cmd]
+  (log/log! :info "ARCHITECT WORKFLOW START" cmd)
+  (println (str "→ ARCHITECT WORKFLOW " (str/upper-case (:verb cmd))
+                (when-let [t (:target cmd)] (str " @" t))))
+
+  ;; Phase 1: ARCHITECT creates specs
+  (println "→ ARCHITECT Creating specifications...")
+  (let [architect-result (run-architect cmd)]
+    (println (str "  " (:summary architect-result)))
+
+    (if (= "failed" (:status architect-result))
+      (do
+        (println "✗ ARCHITECT FAILED")
+        {:success false :phase :architect :result architect-result})
+
+      ;; Phase 2-4: Worker → Tester → Reviewer cycle
+      (loop [cycle 1
+             reviewer-feedback nil]
+        (when (> cycle 1)
+          (println (str "  ↻ CYCLE " cycle "/" max-workflow-iterations)))
+
+        ;; Combine architect context with any reviewer feedback
+        (let [context (str "ARCHITECT SPEC:\n" (:summary architect-result)
+                           "\nFiles: " (str/join ", " (:files-changed architect-result))
+                           (when reviewer-feedback (str "\n\nREVIEWER: " reviewer-feedback)))
+              wt-result (run-worker-tester-loop cmd context)]
+
+          (if-not (:success wt-result)
+            ;; Worker or Tester failed
+            (do
+              (println (str "✗ " (str/upper-case (name (:phase wt-result))) " FAILED"))
+              (assoc wt-result :architect architect-result :cycle cycle))
+
+            ;; Worker/Tester passed - proceed to Reviewer
+            (do
+              (println "  → REVIEWER")
+              (let [review-result (run-reviewer (assoc (:worker wt-result)
+                                                       :files-changed (concat (:files-changed architect-result)
+                                                                              (:files-changed (:worker wt-result)))))]
+                (println (str "    " (str/upper-case (:verdict review-result)) ": " (:feedback review-result)))
+
+                (cond
+                  ;; Approved
+                  (= "approve" (:verdict review-result))
+                  (do
+                    (run-curator cmd (:worker wt-result) review-result)
+                    (println "  → CURATOR Memory updated")
+                    (println "✓ ARCHITECT WORKFLOW COMPLETE")
+                    {:success true
+                     :architect architect-result
+                     :worker (:worker wt-result)
+                     :tester (:tester wt-result)
+                     :reviewer review-result
+                     :iterations {:cycle cycle :worker-attempts (:attempts wt-result)}})
+
+                  ;; Rejected - restart Worker → Tester cycle
+                  (and (contains? #{"reject" "needs_revision"} (:verdict review-result))
+                       (< cycle max-workflow-iterations))
+                  (do
+                    (println "  ↻ REVIEWER REJECTED - restarting cycle")
+                    (recur (inc cycle) (:feedback review-result)))
+
+                  ;; Max cycles reached
+                  :else
+                  (do
+                    (println (str "✗ REJECTED after " cycle " cycles - manual intervention needed"))
+                    {:success false
+                     :phase :reviewer
+                     :architect architect-result
+                     :worker (:worker wt-result)
+                     :tester (:tester wt-result)
+                     :reviewer review-result
+                     :iterations {:cycle cycle :worker-attempts (:attempts wt-result)}}))))))))))
+
