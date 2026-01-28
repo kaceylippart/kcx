@@ -165,15 +165,17 @@
 ;; ============================================================================
 
 (defn status!
-  "Print a clean status line. Always shown."
+  "Print a clean status line to stderr (bypasses MCP stdout capture)."
   [& parts]
-  (println (str/join " " (map str parts))))
+  (binding [*out* *err*]
+    (println (str/join " " (map str parts)))))
 
 (defn detail!
-  "Print detail line. Only shown in verbose mode."
+  "Print detail line to stderr. Only shown in verbose mode."
   [& parts]
   (when (verbose?)
-    (println (str "  " (str/join " " (map str parts))))))
+    (binding [*out* *err*]
+      (println (str "  " (str/join " " (map str parts)))))))
 
 (defn format-files-changed
   "Format file changes compactly: '3 files' or 'file.clj'"
