@@ -86,6 +86,26 @@
     (mod (+ a b) c)))
 
 
+(defn add-sqrt
+  "Adds two numbers and returns the square root of the sum: sqrt(a + b).
+
+  Parameters:
+  - a (number): First number to add
+  - b (number): Second number to add
+
+  Returns:
+  - number: The square root of (a + b)
+
+  Throws:
+  - ex-info: When the sum is negative (complex result not supported)"
+  [a b]
+  (let [sum (+ a b)]
+    (if (neg? sum)
+      (throw (ex-info "Cannot take square root of negative number"
+                      {:addend1 a :addend2 b :sum sum :error-type :negative-square-root}))
+      (Math/sqrt sum))))
+
+
 (defn calculate
   [op a b & args]
   (case op
@@ -97,4 +117,5 @@
     :add-modulo (if (seq args)
                   (add-modulo a b (first args))
                   (throw (ex-info "add-modulo requires third argument (modulo)" {:op op})))
+    :add-sqrt (add-sqrt a b)
     (throw (ex-info "Unknown operation" {:op op}))))

@@ -107,3 +107,42 @@
     (is (thrown-with-msg? clojure.lang.ExceptionInfo
                           #"add-modulo requires third argument"
                           (calculate :add-modulo 3 5)))))
+
+
+(deftest add-sqrt-test
+  (testing "basic add-sqrt operations"
+    (is (= 3.0 (add-sqrt 4 5)))      ; sqrt(4 + 5) = sqrt(9) = 3
+    (is (= 5.0 (add-sqrt 9 16)))     ; sqrt(9 + 16) = sqrt(25) = 5
+    (is (= 4.0 (add-sqrt 7 9)))      ; sqrt(7 + 9) = sqrt(16) = 4
+    (is (= 0.0 (add-sqrt 0 0))))     ; sqrt(0 + 0) = sqrt(0) = 0
+
+  (testing "fractional results"
+    (is (< (Math/abs (- 2.236067977499 (add-sqrt 1 4))) 0.0001))  ; sqrt(1 + 4) = sqrt(5) ≈ 2.236
+    (is (< (Math/abs (- 3.16227766017 (add-sqrt 2 8))) 0.0001)))  ; sqrt(2 + 8) = sqrt(10) ≈ 3.162
+
+  (testing "edge cases"
+    (is (= 1.0 (add-sqrt 0 1)))      ; sqrt(0 + 1) = sqrt(1) = 1
+    (is (= 1.0 (add-sqrt 1 0)))      ; sqrt(1 + 0) = sqrt(1) = 1
+    (is (= 2.0 (add-sqrt -3 7)))     ; sqrt(-3 + 7) = sqrt(4) = 2
+    (is (= 0.0 (add-sqrt -5 5))))    ; sqrt(-5 + 5) = sqrt(0) = 0
+
+  (testing "error conditions"
+    ;; Sum is negative
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Cannot take square root of negative number"
+                          (add-sqrt 2 -5)))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Cannot take square root of negative number"
+                          (add-sqrt -10 -3)))))
+
+
+(deftest calculate-add-sqrt-test
+  (testing "add-sqrt through calculate dispatcher"
+    (is (= 3.0 (calculate :add-sqrt 4 5)))
+    (is (= 5.0 (calculate :add-sqrt 9 16)))
+    (is (= 0.0 (calculate :add-sqrt 0 0))))
+
+  (testing "add-sqrt error handling in dispatcher"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                          #"Cannot take square root of negative number"
+                          (calculate :add-sqrt 2 -5)))))
