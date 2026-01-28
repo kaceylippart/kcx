@@ -168,22 +168,22 @@ Customize agent behavior via environment variables:
 |----------|---------|-------------|
 | `KCX_WORKER_MODEL` | `claude-sonnet-4-20250514` | Model for worker/reviewer agents |
 | `KCX_WORKER_TOOLS` | `Read,Write,Edit,Glob,Grep` | Tools available to agents |
-| `KCX_PERMISSION_MODE` | `acceptEdits` | Permission mode (`acceptEdits`, `bypassPermissions`) |
+| `KCX_PERMISSION_MODE` | `bypassPermissions` | Permission mode (`bypassPermissions` for autonomous, `acceptEdits` for prompts) |
 | `CLAUDE_PATH` | Auto-detected | Path to Claude CLI binary |
 | `KCX_HOME` | `~/kcx` | KCX installation directory |
 
 ### Example Configurations
 
-**Conservative (default):**
+**Default (Autonomous):**
 ```bash
-# Agents can read/write files, prompts for dangerous operations
-export KCX_PERMISSION_MODE="acceptEdits"
+# Agents run autonomously - required for non-interactive operation
+export KCX_PERMISSION_MODE="bypassPermissions"
 export KCX_WORKER_TOOLS="Read,Write,Edit,Glob,Grep"
 ```
 
-**Fully Autonomous:**
+**With Bash Access:**
 ```bash
-# Agents run without permission prompts (use with caution)
+# Add Bash for agents that need shell commands
 export KCX_PERMISSION_MODE="bypassPermissions"
 export KCX_WORKER_TOOLS="Read,Write,Edit,Glob,Grep,Bash"
 ```

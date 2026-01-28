@@ -98,8 +98,9 @@
 
 (def worker-permission-mode
   "Permission mode for workers. Override with KCX_PERMISSION_MODE env var.
-   Options: acceptEdits (default, safer), bypassPermissions (autonomous)"
-  (or (System/getenv "KCX_PERMISSION_MODE") "acceptEdits"))
+   Options: bypassPermissions (default, needed for autonomous operation), acceptEdits (prompts for some ops)
+   Note: acceptEdits doesn't work well in non-interactive mode - blocks on prompts that can't be answered."
+  (or (System/getenv "KCX_PERMISSION_MODE") "bypassPermissions"))
 
 
 (defn spawn-claude
