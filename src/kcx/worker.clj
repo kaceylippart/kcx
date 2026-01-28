@@ -1,5 +1,11 @@
 (ns kcx.worker
-  "Spawns isolated Claude instances for autonomous work"
+  "Spawns isolated Claude instances for autonomous work.
+
+   Current approach: CLI-based spawning with clean environment (env -i).
+   This works with Claude CLI authentication (Team, Pro, etc.).
+
+   Future: Direct API support via kcx.claude-api when ANTHROPIC_API_KEY is available.
+   See src/kcx/claude_api.clj for the API-based implementation."
   (:require
     [babashka.process :as p]
     [clojure.string :as str]
