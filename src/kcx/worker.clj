@@ -18,7 +18,7 @@
   (or (some-> (System/getenv "KCX_MAX_ITERATIONS") parse-long) 3))
 
 (defn build-worker-prompt
-  "Build a focused prompt for the worker from DSL command.
+  "Build a comprehensive prompt for autonomous multi-file work.
    Includes memory context from past work on this target.
    Optional reviewer-feedback is passed when retrying after rejection."
   [{:keys [verb target includes excludes] :as cmd} & {:keys [reviewer-feedback iteration]}]
@@ -26,23 +26,38 @@
         constraints (cond-> []
                       (seq includes) (conj (str "FOCUS ON: " (str/join ", " includes)))
                       (seq excludes) (conj (str "AVOID: " (str/join ", " excludes))))
-        target-str (when (and target (not= target "global_context"))
-                     (str " in " target))
+        target-str (if (and target (not= target "global_context"))
+                     (str "starting from " target)
+                     "across the codebase")
         memory-context (state/build-memory-context cmd)
         retry-context (when reviewer-feedback
                         (str "\n⚠️ PREVIOUS ATTEMPT REJECTED (iteration " iteration ").\n"
                              "Reviewer feedback: " reviewer-feedback "\n"
                              "Address this feedback in your implementation.\n"))]
     (str
-      "You are WORKER. " action target-str ".\n"
+      "You are WORKER, an autonomous coding agent. Your task: " action " " target-str ".\n"
       (when memory-context
         (str "\n" memory-context "\n"))
       (when (seq constraints)
-        (str (str/join ". " constraints) ".\n"))
+        (str "\nConstraints: " (str/join ". " constraints) ".\n"))
       retry-context
-      "\nWhen done, output EXACTLY:\n"
+      "\n## PROTOCOL\n"
+      "1. EXPLORE: Search the codebase to understand the full scope. Use Glob/Grep to find all related files.\n"
+      "2. ANALYZE: Read files to understand dependencies, patterns, and architecture.\n"
+      "3. PLAN: Identify ALL files that need changes (not just the target).\n"
+      "4. IMPLEMENT: Make comprehensive changes across all necessary files.\n"
+      "5. VERIFY: If Bash is available, run tests/build to confirm changes work.\n"
+      "\n## AUTONOMY\n"
+      "- You have FULL permission to modify ANY file needed to complete the task.\n"
+      "- Change as many files as necessary - don't limit yourself to one file.\n"
+      "- Follow existing patterns and conventions in the codebase.\n"
+      "- If you find related issues while working, fix them too.\n"
+      "\n## OUTPUT (required at end)\n"
       "WORKER_RESULT|STATUS|FILES|SUMMARY\n"
-      "Example: WORKER_RESULT|success|src/foo.clj,src/bar.clj|Fixed the bug\n"
+      "- STATUS: 'success' or 'failed'\n"
+      "- FILES: comma-separated list of ALL files you modified\n"
+      "- SUMMARY: brief description of changes\n"
+      "Example: WORKER_RESULT|success|src/core.clj,src/utils.clj,test/core_test.clj|Refactored error handling across 3 files\n"
       "\nBegin.")))
 
 
@@ -107,6 +122,17 @@
                   (str home-dir "/kcx")))
 (def playground-dir (str kcx-home "/playground"))
 
+;; Working directory for agent operations - defaults to current directory
+(def worker-working-dir
+  "Working directory for worker agents. Override with KCX_WORKING_DIR env var.
+   Defaults to current directory (.) for real project work.
+   Set to 'playground' to use the KCX playground directory."
+  (let [configured (System/getenv "KCX_WORKING_DIR")]
+    (cond
+      (= configured "playground") playground-dir
+      (seq configured) configured
+      :else ".")))
+
 ;; ============================================================================
 ;; Agent Spawn Configuration
 ;; ============================================================================
@@ -117,8 +143,9 @@
   (or (System/getenv "KCX_WORKER_MODEL") "claude-sonnet-4-20250514"))
 
 (def worker-tools
-  "Tools available to worker agents. Override with KCX_WORKER_TOOLS env var."
-  (or (System/getenv "KCX_WORKER_TOOLS") "Read,Write,Edit,Glob,Grep"))
+  "Tools available to worker agents. Override with KCX_WORKER_TOOLS env var.
+   Includes Bash by default for running tests and verification."
+  (or (System/getenv "KCX_WORKER_TOOLS") "Read,Write,Edit,Glob,Grep,Bash"))
 
 (def worker-permission-mode
   "Permission mode for workers. Override with KCX_PERMISSION_MODE env var.
@@ -135,7 +162,7 @@
    (e.g., Bedrock vs direct API, nested Claude detection, etc.)."
   [prompt & {:keys [timeout-ms working-dir tools permission-mode]
              :or {timeout-ms 300000
-                  working-dir playground-dir
+                  working-dir worker-working-dir
                   tools worker-tools
                   permission-mode worker-permission-mode}}]
   (log/log! :info "SPAWN CLAUDE" {:prompt-length (count prompt)
@@ -232,28 +259,37 @@
 ;; ============================================================================
 
 (defn build-tester-prompt
-  "Build a prompt for the tester to write tests for a target.
+  "Build a prompt for autonomous test creation.
    Includes memory context of past test patterns and issues."
   [{:keys [verb target includes excludes] :as cmd}]
-  (let [target-str (when (and target (not= target "global_context"))
-                     (str " for " target))
+  (let [target-str (if (and target (not= target "global_context"))
+                     (str "starting from " target)
+                     "across the codebase")
+        tdd-mode? (= "tdd" verb)
         constraints (cond-> []
                       (seq includes) (conj (str "FOCUS ON: " (str/join ", " includes)))
                       (seq excludes) (conj (str "AVOID: " (str/join ", " excludes))))
         memory-context (state/build-memory-context cmd)]
     (str
-      "You are TESTER. Write " (if (= "tdd" verb) "TDD" "comprehensive") " tests" target-str ".\n"
+      "You are TESTER, an autonomous testing agent. Write " (if tdd-mode? "TDD" "comprehensive") " tests " target-str ".\n"
       (when memory-context
         (str "\n" memory-context "\n"))
       (when (seq constraints)
-        (str (str/join ". " constraints) ".\n"))
-      "\nPROTOCOL:\n"
-      "1. Read existing code to understand what to test\n"
-      "2. Write test file(s) with failing tests\n"
-      "3. Tests should cover edge cases and error conditions\n"
-      "\nWhen done, output EXACTLY:\n"
+        (str "\nConstraints: " (str/join ". " constraints) ".\n"))
+      "\n## PROTOCOL\n"
+      "1. EXPLORE: Search for existing tests and code patterns. Understand the testing conventions.\n"
+      "2. ANALYZE: Read the code to identify all testable units, edge cases, and error conditions.\n"
+      "3. PLAN: Identify ALL test files needed (may span multiple modules).\n"
+      "4. IMPLEMENT: Write comprehensive tests. Cover happy paths, edge cases, and error handling.\n"
+      (when tdd-mode? "5. TDD: Write failing tests FIRST, then minimal code to pass.\n")
+      "5. VERIFY: If Bash is available, run the test suite to confirm tests execute.\n"
+      "\n## AUTONOMY\n"
+      "- Create test files wherever appropriate (follow project conventions).\n"
+      "- Test multiple modules if the target spans them.\n"
+      "- Include integration tests if relevant.\n"
+      "\n## OUTPUT (required at end)\n"
       "TESTER_RESULT|STATUS|FILES|SUMMARY\n"
-      "Example: TESTER_RESULT|success|test/calculator_test.clj|Added 5 tests for edge cases\n"
+      "Example: TESTER_RESULT|success|test/core_test.clj,test/utils_test.clj|Added 12 unit tests covering edge cases\n"
       "\nBegin.")))
 
 
@@ -329,35 +365,45 @@
 ;; ============================================================================
 
 (defn build-architect-prompt
-  "Build a prompt for the architect to create specs/plans.
+  "Build a prompt for autonomous architectural planning.
    Includes memory context of past architectural decisions."
   [{:keys [verb target includes excludes] :as cmd}]
   (let [action (case verb
                  "plan" "Create an implementation plan"
                  "design" "Design the system architecture"
                  "arch" "Define the technical architecture"
-                 "analyze" "Analyze the requirements and structure"
+                 "analyze" "Analyze the codebase and requirements"
                  (str "Create documentation for " verb))
-        target-str (when (and target (not= target "global_context"))
-                     (str " for " target))
+        target-str (if (and target (not= target "global_context"))
+                     (str " for " target)
+                     " for the system")
         constraints (cond-> []
                       (seq includes) (conj (str "FOCUS ON: " (str/join ", " includes)))
                       (seq excludes) (conj (str "AVOID: " (str/join ", " excludes))))
         memory-context (state/build-memory-context cmd)]
     (str
-      "You are ARCHITECT. " action target-str ".\n"
+      "You are ARCHITECT, an autonomous design agent. " action target-str ".\n"
       (when memory-context
         (str "\n" memory-context "\n"))
       (when (seq constraints)
-        (str (str/join ". " constraints) ".\n"))
-      "\nPROTOCOL:\n"
-      "1. Analyze the existing codebase structure\n"
-      "2. Create a detailed specification/plan as a markdown file\n"
-      "3. Define data structures, interfaces, and file organization\n"
-      "4. Do NOT write implementation code - focus on the 'what' and 'why'\n"
-      "\nWhen done, output EXACTLY:\n"
+        (str "\nConstraints: " (str/join ". " constraints) ".\n"))
+      "\n## PROTOCOL\n"
+      "1. EXPLORE: Thoroughly examine the codebase structure, dependencies, and patterns.\n"
+      "2. ANALYZE: Understand existing architecture, data flows, and integration points.\n"
+      "3. DESIGN: Create comprehensive specification documents covering:\n"
+      "   - System overview and component relationships\n"
+      "   - Data structures and interfaces\n"
+      "   - File organization and module boundaries\n"
+      "   - Implementation phases and dependencies\n"
+      "4. DOCUMENT: Write clear markdown specs that workers can follow.\n"
+      "\n## AUTONOMY\n"
+      "- Explore ALL relevant parts of the codebase.\n"
+      "- Create multiple spec files if the scope warrants it.\n"
+      "- Reference existing patterns and suggest improvements.\n"
+      "- Do NOT write implementation code - focus on the 'what' and 'why'.\n"
+      "\n## OUTPUT (required at end)\n"
       "ARCHITECT_RESULT|STATUS|FILES|SUMMARY\n"
-      "Example: ARCHITECT_RESULT|success|docs/api-spec.md|Created API specification with endpoints\n"
+      "Example: ARCHITECT_RESULT|success|docs/api-spec.md,docs/data-model.md|Created API and data specifications\n"
       "\nBegin.")))
 
 

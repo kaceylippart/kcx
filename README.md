@@ -167,7 +167,8 @@ Customize agent behavior via environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `KCX_WORKER_MODEL` | `claude-sonnet-4-20250514` | Model for worker/reviewer agents |
-| `KCX_WORKER_TOOLS` | `Read,Write,Edit,Glob,Grep` | Tools available to agents |
+| `KCX_WORKER_TOOLS` | `Read,Write,Edit,Glob,Grep,Bash` | Tools available to agents |
+| `KCX_WORKING_DIR` | `.` (current dir) | Working directory for agents (`playground` for sandbox) |
 | `KCX_PERMISSION_MODE` | `bypassPermissions` | Permission mode (`bypassPermissions` for autonomous, `acceptEdits` for prompts) |
 | `KCX_MAX_ITERATIONS` | `3` | Max worker retries on rejection |
 | `KCX_TEST_CMD` | `bb -m test-runner` | Command to run tests (for TDD workflow) |
@@ -176,23 +177,23 @@ Customize agent behavior via environment variables:
 
 ### Example Configurations
 
-**Default (Autonomous):**
+**Default (Autonomous with full access):**
 ```bash
-# Agents run autonomously - required for non-interactive operation
-export KCX_PERMISSION_MODE="bypassPermissions"
-export KCX_WORKER_TOOLS="Read,Write,Edit,Glob,Grep"
-```
-
-**With Bash Access:**
-```bash
-# Add Bash for agents that need shell commands
+# Agents work in current directory with full tool access including Bash
+# This is the default - agents can explore, modify, and verify across the codebase
 export KCX_PERMISSION_MODE="bypassPermissions"
 export KCX_WORKER_TOOLS="Read,Write,Edit,Glob,Grep,Bash"
 ```
 
+**Sandbox Mode:**
+```bash
+# Restrict agents to playground directory for safe experimentation
+export KCX_WORKING_DIR="playground"
+```
+
 **Read-Only Reviewer:**
 ```bash
-# For review-only workflows
+# For review-only workflows (no file modifications)
 export KCX_WORKER_TOOLS="Read,Glob,Grep"
 ```
 
