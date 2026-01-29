@@ -47,6 +47,13 @@
     "proj" (state/switch-project (:target cmd))
     "list" (state/list-projects)
     "status" (str "→ status\n" (state/list-projects))
+    ;; Jobs status command
+    "jobs" (let [running (worker/get-running-jobs)]
+             (if (empty? running)
+               "No running jobs."
+               (str "Running jobs:\n"
+                    (str/join "\n\n"
+                              (map worker/format-job-status running)))))
     ;; Default
     (str "→ " (:verb cmd) " (no handler)")))
 
@@ -201,7 +208,7 @@
     (let [verb (:verb cmd)]
       (case verb
         ;; Controller commands
-        ("proj" "list" "status") (handle-controller cmd)
+        ("proj" "list" "status" "jobs") (handle-controller cmd)
         ;; TDD/Test workflow - use tester agent
         ("test" "tdd")
         (let [[result lines] (worker/with-status-capture

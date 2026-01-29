@@ -161,17 +161,98 @@
 (defn verbose? [] (= output-mode "verbose"))
 
 ;; ============================================================================
+;; Job Tracking
+;; ============================================================================
+;; Track running jobs for status queries
+
+(def ^:dynamic *current-job* nil)
+(defonce jobs-state (atom {}))
+
+(defn generate-job-id []
+  (str (java.util.UUID/randomUUID)))
+
+(defn format-elapsed
+  "Format elapsed time in human-readable form."
+  [start-ms]
+  (let [elapsed (- (System/currentTimeMillis) start-ms)
+        secs (quot elapsed 1000)
+        mins (quot secs 60)
+        secs-rem (mod secs 60)]
+    (cond
+      (< secs 60) (str secs "s")
+      :else (str mins "m " secs-rem "s"))))
+
+(defn start-job!
+  "Start tracking a new job. Returns job-id."
+  [cmd]
+  (let [job-id (generate-job-id)
+        job {:id job-id
+             :cmd cmd
+             :start-time (System/currentTimeMillis)
+             :phase :starting
+             :phase-start (System/currentTimeMillis)
+             :status :running}]
+    (swap! jobs-state assoc job-id job)
+    job-id))
+
+(defn update-job-phase!
+  "Update the current job's phase."
+  ([job-id phase]
+   (update-job-phase! job-id phase nil))
+  ([job-id phase extra-info]
+   (swap! jobs-state update job-id merge
+          {:phase phase
+           :phase-start (System/currentTimeMillis)}
+          (when extra-info extra-info))))
+
+(defn complete-job!
+  "Mark a job as complete."
+  [job-id success?]
+  (swap! jobs-state update job-id assoc
+         :status (if success? :complete :failed)
+         :end-time (System/currentTimeMillis)))
+
+(defn get-running-jobs
+  "Get all currently running jobs."
+  []
+  (->> @jobs-state
+       vals
+       (filter #(= :running (:status %)))))
+
+(defn get-job [job-id]
+  (get @jobs-state job-id))
+
+(defn format-job-status
+  "Format a job's status for display."
+  [{:keys [id cmd phase start-time phase-start status agent iteration] :as job}]
+  (when job
+    (let [total-elapsed (format-elapsed start-time)
+          phase-elapsed (format-elapsed phase-start)]
+      (str "Job: " (:verb cmd) (when (:target cmd) (str " @" (:target cmd)))
+           "\n  ID: " (subs id 0 8) "..."
+           "\n  Status: " (name status)
+           "\n  Phase: " (name phase) " (" phase-elapsed ")"
+           (when agent (str "\n  Agent: " (name agent)))
+           (when iteration (str "\n  Iteration: " iteration))
+           "\n  Total time: " total-elapsed))))
+
+;; ============================================================================
 ;; Clean Output Helpers
 ;; ============================================================================
 ;; Status lines are accumulated in an atom and returned with the workflow result
 ;; so they can be included in the MCP response (since MCP captures stdout/stderr)
 
 (def ^:dynamic *status-lines* nil)
+(def ^:dynamic *workflow-start* nil)
 
 (defn status!
-  "Record a status line. Accumulated for MCP response."
+  "Record a status line. Accumulated for MCP response.
+   Includes elapsed time when within a workflow."
   [& parts]
-  (let [line (str/join " " (map str parts))]
+  (let [elapsed (when *workflow-start*
+                  (str "[" (format-elapsed *workflow-start*) "]"))
+        line (str (when elapsed (str elapsed " "))
+                  (str/join " " (map str parts)))]
     (when *status-lines*
       (swap! *status-lines* conj line))
     ;; Also try stderr in case it works in some contexts
@@ -590,6 +671,8 @@
                               feedback feedback
                               tester-feedback (str "TESTER: " tester-feedback)
                               :else nil)
+          _ (when *current-job*
+              (update-job-phase! *current-job* :worker {:agent :worker :iteration attempt}))
           _ (status! "→ WORKER" (when (> attempt 1) (str "(attempt " attempt ")")))
           worker-result (run-worker cmd :reviewer-feedback combined-feedback :iteration attempt)
           files (format-files-changed (:files-changed worker-result))]
@@ -605,6 +688,8 @@
           (detail! (:summary worker-result))
 
           ;; Tester validation
+          (when *current-job*
+            (update-job-phase! *current-job* :tester {:agent :tester :iteration attempt}))
           (status! "→ TESTER validating...")
           (let [tester-result (run-tester-validation worker-result cmd)]
 
@@ -635,58 +720,68 @@
    Returns {:success bool :worker {...} :tester {...} :reviewer {...} :iterations {...}}"
   [cmd]
   (log/log! :info "WORKFLOW START" cmd)
-  (status! "━━━" (str/upper-case (:verb cmd)) (when-let [t (:target cmd)] (str "@" t)) "━━━")
+  (let [job-id (start-job! cmd)]
+    (binding [*workflow-start* (System/currentTimeMillis)
+              *current-job* job-id]
+      (status! "━━━" (str/upper-case (:verb cmd)) (when-let [t (:target cmd)] (str "@" t)) "━━━")
 
-  (loop [cycle 1
-         reviewer-feedback nil]
-    (when (> cycle 1)
-      (status! "↻ CYCLE" (str cycle "/" max-workflow-iterations)))
+      (loop [cycle 1
+             reviewer-feedback nil]
+        (when (> cycle 1)
+          (status! "↻ CYCLE" (str cycle "/" max-workflow-iterations)))
 
-    ;; Run Worker → Tester inner loop
-    (let [wt-result (run-worker-tester-loop cmd reviewer-feedback)]
+        ;; Run Worker → Tester inner loop
+        (update-job-phase! job-id :worker-tester)
+        (let [wt-result (run-worker-tester-loop cmd reviewer-feedback)]
 
-      (if-not (:success wt-result)
-        ;; Worker or Tester failed
-        (assoc wt-result :cycle cycle)
+          (if-not (:success wt-result)
+            ;; Worker or Tester failed
+            (do
+              (complete-job! job-id false)
+              (assoc wt-result :cycle cycle))
 
-        ;; Worker/Tester passed - proceed to Reviewer
-        (do
-          (status! "→ REVIEWER reviewing...")
-          (let [review-result (run-reviewer (:worker wt-result))]
+            ;; Worker/Tester passed - proceed to Reviewer
+            (do
+              (update-job-phase! job-id :reviewer)
+              (status! "→ REVIEWER reviewing...")
+              (let [review-result (run-reviewer (:worker wt-result))]
 
-            (cond
-              ;; Approved
-              (= "approve" (:verdict review-result))
-              (do
-                (status! "  REVIEWER approved")
-                (detail! (:feedback review-result))
-                (run-curator cmd (:worker wt-result) review-result)
-                (status! "→ CURATOR updated memory")
-                (status! "✓ DONE")
-                {:success true
-                 :worker (:worker wt-result)
-                 :tester (:tester wt-result)
-                 :reviewer review-result
-                 :iterations {:cycle cycle :worker-attempts (:attempts wt-result)}})
+                (cond
+                  ;; Approved
+                  (= "approve" (:verdict review-result))
+                  (do
+                    (status! "  REVIEWER approved")
+                    (detail! (:feedback review-result))
+                    (update-job-phase! job-id :curator)
+                    (run-curator cmd (:worker wt-result) review-result)
+                    (status! "→ CURATOR updated memory")
+                    (status! "✓ DONE")
+                    (complete-job! job-id true)
+                    {:success true
+                     :worker (:worker wt-result)
+                     :tester (:tester wt-result)
+                     :reviewer review-result
+                     :iterations {:cycle cycle :worker-attempts (:attempts wt-result)}})
 
-              ;; Rejected - restart Worker → Tester cycle
-              (and (contains? #{"reject" "needs_revision"} (:verdict review-result))
-                   (< cycle max-workflow-iterations))
-              (do
-                (status! "  REVIEWER rejected - restarting cycle")
-                (detail! (:feedback review-result))
-                (recur (inc cycle) (str "REVIEWER: " (:feedback review-result))))
+                  ;; Rejected - restart Worker → Tester cycle
+                  (and (contains? #{"reject" "needs_revision"} (:verdict review-result))
+                       (< cycle max-workflow-iterations))
+                  (do
+                    (status! "  REVIEWER rejected - restarting cycle")
+                    (detail! (:feedback review-result))
+                    (recur (inc cycle) (str "REVIEWER: " (:feedback review-result))))
 
-              ;; Max cycles reached
-              :else
-              (do
-                (status! "✗ REJECTED after" cycle "cycles")
-                {:success false
-                 :phase :reviewer
-                 :worker (:worker wt-result)
-                 :tester (:tester wt-result)
-                 :reviewer review-result
-                 :iterations {:cycle cycle :worker-attempts (:attempts wt-result)}}))))))))
+                  ;; Max cycles reached
+                  :else
+                  (do
+                    (status! "✗ REJECTED after" cycle "cycles")
+                    (complete-job! job-id false)
+                    {:success false
+                     :phase :reviewer
+                     :worker (:worker wt-result)
+                     :tester (:tester wt-result)
+                     :reviewer review-result
+                     :iterations {:cycle cycle :worker-attempts (:attempts wt-result)}}))))))))))
 
 
 (defn execute-tester-workflow
