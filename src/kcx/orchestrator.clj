@@ -194,6 +194,46 @@
 
 
 ;; ============================================================================
+;; Autonomous Mode: Result Formatting
+;; ============================================================================
+
+(defn format-workflow-result
+  "Format a comprehensive result summary for the calling Claude.
+   This ensures the caller understands the task is COMPLETE."
+  [result cmd]
+  (let [success? (:success result)
+        ;; Collect files from all agents that may have changed files
+        architect-files (get-in result [:architect :files-changed])
+        worker-files (get-in result [:worker :files-changed])
+        tester-files (get-in result [:tester :files-changed])
+        all-files (distinct (concat (or architect-files [])
+                                    (or worker-files [])
+                                    (or tester-files [])))
+        ;; Get summaries
+        architect-summary (get-in result [:architect :summary])
+        worker-summary (get-in result [:worker :summary])
+        review-feedback (get-in result [:reviewer :feedback])]
+    (str
+      (if success?
+        "═══ TASK COMPLETED SUCCESSFULLY ═══\n"
+        "═══ TASK FAILED ═══\n")
+      "\n"
+      (when (seq all-files)
+        (str "Files modified:\n"
+             (str/join "\n" (map #(str "  • " %) all-files))
+             "\n\n"))
+      (when architect-summary
+        (str "Architecture/Planning:\n  " architect-summary "\n\n"))
+      (when worker-summary
+        (str "Implementation:\n  " worker-summary "\n\n"))
+      (when (and success? review-feedback)
+        (str "Reviewer assessment:\n  " review-feedback "\n\n"))
+      (if success?
+        "⚠️ NO FURTHER ACTION NEEDED - The requested changes have been implemented, tested, and reviewed by sub-agents."
+        (str "Failed at phase: " (name (or (:phase result) :unknown)))))))
+
+
+;; ============================================================================
 ;; Autonomous Mode: Main Command Execution
 ;; ============================================================================
 ;; This is the default mode. Commands trigger complete autonomous workflows
@@ -212,25 +252,22 @@
         ;; TDD/Test workflow - use tester agent
         ("test" "tdd")
         (let [[result lines] (worker/with-status-capture
-                               #(worker/execute-tester-workflow cmd))
-              status (if (:success result)
-                       "✓ TDD WORKFLOW COMPLETE"
-                       (str "✗ TDD WORKFLOW FAILED at " (name (:phase result))))]
-          (str (worker/format-status-lines lines) "\n" status))
+                               #(worker/execute-tester-workflow cmd))]
+          (str (worker/format-status-lines lines)
+               "\n\n"
+               (format-workflow-result result cmd)))
         ;; Architect workflow - specs then implementation
         ("plan" "arch" "design" "analyze")
         (let [[result lines] (worker/with-status-capture
-                               #(worker/execute-architect-workflow cmd))
-              status (if (:success result)
-                       "✓ ARCHITECT WORKFLOW COMPLETE"
-                       (str "✗ ARCHITECT WORKFLOW FAILED at " (name (:phase result))))]
-          (str (worker/format-status-lines lines) "\n" status))
+                               #(worker/execute-architect-workflow cmd))]
+          (str (worker/format-status-lines lines)
+               "\n\n"
+               (format-workflow-result result cmd)))
         ;; Other workflow commands - spawn autonomous agents
         (if (agents/requires-workflow? cmd)
           (let [[result lines] (worker/with-status-capture
-                                 #(worker/execute-workflow cmd))
-                status (if (:success result)
-                         "✓ WORKFLOW COMPLETE"
-                         (str "✗ WORKFLOW FAILED at " (name (:phase result))))]
-            (str (worker/format-status-lines lines) "\n" status))
+                                 #(worker/execute-workflow cmd))]
+            (str (worker/format-status-lines lines)
+                 "\n\n"
+                 (format-workflow-result result cmd)))
           (handle-controller cmd))))))
