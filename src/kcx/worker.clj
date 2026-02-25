@@ -8,6 +8,8 @@
    See src/kcx/claude_api.clj for the API-based implementation."
   (:require
     [babashka.process :as p]
+    [clojure.edn :as edn]
+    [clojure.pprint :as pprint]
     [clojure.string :as str]
     [kcx.logging :as log]
     [kcx.state :as state]))
@@ -17,25 +19,83 @@
   "Maximum WORKER → REVIEWER iterations before giving up. Override with KCX_MAX_ITERATIONS."
   (or (some-> (System/getenv "KCX_MAX_ITERATIONS") parse-long) 3))
 
+;; Sanitize command components to prevent injection
+(defn sanitize-shell-arg
+  "Safely sanitize a string for shell usage by removing dangerous characters"
+  [s]
+  (when s
+    (let [s (str s)]  ; Ensure it's a string
+      (-> s
+          ;; Remove (not escape) dangerous shell metacharacters
+          (str/replace #"[;|&><$`\\]" "")
+          ;; Remove path traversal patterns
+          (str/replace #"\.\." "")
+          ;; Remove line breaks
+          (str/replace #"[\r\n]" "")
+          ;; Escape quotes safely after removing dangerous chars
+          (str/replace "\"" "\\\"")
+          (str/replace "'" "\\'")
+          ;; Limit length to prevent DoS - safe bounds check
+          (#(let [len (count %)]
+              (if (> len 1000) (subs % 0 1000) %)))))))
+
+;; Process cleanup registry
+(def ^:private active-processes (atom #{}))
+
+(defn ^:private register-process [proc]
+  (swap! active-processes conj proc)
+  proc)
+
+(defn ^:private unregister-process [proc]
+  (swap! active-processes disj proc))
+
+(defn shutdown-all-processes
+  "Emergency cleanup - kill all active processes"
+  []
+  (log/log! :warn "SHUTDOWN ALL PROCESSES" {:count (count @active-processes)})
+  (doseq [proc @active-processes]
+    (try
+      (when (and proc (not (realized? (:exit proc))))
+        (.destroy (:proc proc)))
+      (catch Exception e
+        (log/log-error! "PROCESS CLEANUP FAILED" e))))
+  (reset! active-processes #{}))
+
+;; Ensure cleanup on JVM shutdown
+(defonce shutdown-hook
+  (.addShutdownHook (Runtime/getRuntime)
+                    (Thread. shutdown-all-processes)))
+
 (defn build-worker-prompt
   "Build a comprehensive prompt for autonomous multi-file work.
    Includes memory context from past work on this target.
-   Optional reviewer-feedback is passed when retrying after rejection."
-  [{:keys [verb target includes excludes] :as cmd} & {:keys [reviewer-feedback iteration]}]
-  (let [action (str/upper-case verb)
+   Optional reviewer-feedback is passed when retrying after rejection.
+   Supports :instruction field for natural language context."
+  [{:keys [verb target includes excludes instruction] :as cmd} & {:keys [reviewer-feedback iteration]}]
+  (let [;; Sanitize all inputs to prevent injection
+        safe-verb (sanitize-shell-arg verb)
+        safe-target (sanitize-shell-arg target)
+        safe-includes (map sanitize-shell-arg includes)
+        safe-excludes (map sanitize-shell-arg excludes)
+        safe-instruction (sanitize-shell-arg instruction)
+        safe-reviewer-feedback (sanitize-shell-arg reviewer-feedback)
+
+        action (str/upper-case safe-verb)
         constraints (cond-> []
-                      (seq includes) (conj (str "FOCUS ON: " (str/join ", " includes)))
-                      (seq excludes) (conj (str "AVOID: " (str/join ", " excludes))))
-        target-str (if (and target (not= target "global_context"))
-                     (str "starting from " target)
+                      (seq safe-includes) (conj (str "FOCUS ON: " (str/join ", " safe-includes)))
+                      (seq safe-excludes) (conj (str "AVOID: " (str/join ", " safe-excludes))))
+        target-str (if (and safe-target (not= safe-target "global_context"))
+                     (str "starting from " safe-target)
                      "across the codebase")
         memory-context (state/build-memory-context cmd)
-        retry-context (when reviewer-feedback
+        retry-context (when safe-reviewer-feedback
                         (str "\n⚠️ PREVIOUS ATTEMPT REJECTED (iteration " iteration ").\n"
-                             "Reviewer feedback: " reviewer-feedback "\n"
+                             "Reviewer feedback: " safe-reviewer-feedback "\n"
                              "Address this feedback in your implementation.\n"))]
     (str
       "You are WORKER, an autonomous coding agent. Your task: " action " " target-str ".\n"
+      (when safe-instruction
+        (str "\n## INSTRUCTION\n" safe-instruction "\n"))
       (when memory-context
         (str "\n" memory-context "\n"))
       (when (seq constraints)
@@ -61,6 +121,46 @@
       "\nBegin.")))
 
 
+(defn build-natural-prompt
+  "Build a prompt for natural language task execution.
+   Takes the user's prompt directly and wraps it with protocol instructions."
+  [{:keys [prompt target] :as cmd} & {:keys [reviewer-feedback iteration]}]
+  (let [;; Sanitize inputs to prevent injection
+        safe-prompt (sanitize-shell-arg prompt)
+        safe-reviewer-feedback (sanitize-shell-arg reviewer-feedback)
+
+        memory-context (state/build-memory-context cmd)
+        retry-context (when safe-reviewer-feedback
+                        (str "\n⚠️ PREVIOUS ATTEMPT REJECTED (iteration " iteration ").\n"
+                             "Reviewer feedback: " safe-reviewer-feedback "\n"
+                             "Address this feedback in your implementation.\n"))]
+    (str
+      "You are WORKER, an autonomous coding agent.\n\n"
+      "## YOUR TASK\n"
+      safe-prompt "\n\n"
+      (when memory-context
+        (str "## CONTEXT FROM PREVIOUS WORK\n" memory-context "\n\n"))
+      retry-context
+      "## PROTOCOL\n"
+      "1. EXPLORE: Search the codebase to understand the full scope. Use Glob/Grep to find relevant files.\n"
+      "2. ANALYZE: Read files to understand dependencies, patterns, and architecture.\n"
+      "3. PLAN: Identify ALL files that need changes.\n"
+      "4. IMPLEMENT: Make comprehensive changes across all necessary files.\n"
+      "5. VERIFY: If Bash is available, run tests/build to confirm changes work.\n"
+      "\n## AUTONOMY\n"
+      "- You have FULL permission to modify ANY file needed to complete the task.\n"
+      "- Change as many files as necessary - don't limit yourself to one file.\n"
+      "- Follow existing patterns and conventions in the codebase.\n"
+      "- If you find related issues while working, fix them too.\n"
+      "\n## OUTPUT (required at end)\n"
+      "WORKER_RESULT|STATUS|FILES|SUMMARY\n"
+      "- STATUS: 'success' or 'failed'\n"
+      "- FILES: comma-separated list of ALL files you modified\n"
+      "- SUMMARY: brief description of changes\n"
+      "Example: WORKER_RESULT|success|src/core.clj,src/utils.clj|Implemented requested feature\n"
+      "\nBegin.")))
+
+
 (defn build-reviewer-prompt
   "Build prompt for reviewer to check worker's changes.
    Includes memory context of past issues and patterns."
@@ -81,14 +181,18 @@
 (defn parse-worker-result
   "Extract structured result from worker output. Format: WORKER_RESULT|status|files|summary"
   [output]
-  (if-let [match (re-find #"WORKER_RESULT\|(\w+)\|([^|]*)\|(.+)" output)]
-    {:status (nth match 1)
-     :files-changed (when-let [f (nth match 2)]
-                      (when (seq f) (str/split (str/trim f) #",\s*")))
-     :summary (nth match 3)}
+  (if (and output (string? output))
+    (if-let [match (re-find #"WORKER_RESULT\|(\w+)\|([^|]*)\|(.+)" output)]
+      {:status (nth match 1)
+       :files-changed (when-let [f (nth match 2)]
+                        (when (seq f) (str/split (str/trim f) #",\s*")))
+       :summary (nth match 3)}
+      {:status "unknown"
+       :files-changed []
+       :summary (str "Could not parse output: " (subs output 0 (min 200 (count output))))})
     {:status "unknown"
      :files-changed []
-     :summary (str "Could not parse output: " (subs output 0 (min 200 (count output))))}))
+     :summary "No output provided"}))
 
 
 (defn parse-review-result
@@ -103,7 +207,7 @@
 
 (def home-dir (System/getProperty "user.home"))
 
-;; Find claude binary - check common locations
+;; Find claude binary - check common locations with proper escaping
 (def claude-path
   (or (System/getenv "CLAUDE_PATH")
       (let [which-result (try
@@ -161,12 +265,87 @@
 (defn verbose? [] (= output-mode "verbose"))
 
 ;; ============================================================================
-;; Job Tracking
+;; Job Tracking with Memory Management
 ;; ============================================================================
-;; Track running jobs for status queries
+;; Track running jobs for status queries with TTL
 
 (def ^:dynamic *current-job* nil)
 (defonce jobs-state (atom {}))
+
+;; Clean old jobs periodically to prevent memory leaks
+(def job-ttl-ms (* 24 60 60 1000)) ; 24 hours
+
+(defn clean-old-jobs!
+  "Remove jobs older than TTL to prevent memory leaks"
+  []
+  (let [now (System/currentTimeMillis)
+        cutoff (- now job-ttl-ms)]
+    (swap! jobs-state
+           (fn [jobs]
+             (into {} (filter (fn [[_ job]]
+                                (or (= :running (:status job))
+                                    (> (or (:end-time job) (:start-time job)) cutoff)))
+                              jobs))))))
+
+;; Clean old jobs on a schedule
+(defonce job-cleaner
+  (future
+    (while true
+      (Thread/sleep job-ttl-ms)
+      (clean-old-jobs!))))
+
+;; ============================================================================
+;; Last Command Tracking (for !redo)
+;; ============================================================================
+;; Track the last executed workflow command for redo functionality
+
+(defonce last-command-state (atom nil))
+
+(defn set-last-command!
+  "Store the last executed command for redo functionality."
+  [cmd]
+  (reset! last-command-state cmd))
+
+(defn get-last-command
+  "Get the last executed command."
+  []
+  @last-command-state)
+
+(defn merge-redo-command
+  "Merge redo modifiers with the last command.
+   - New includes are added to existing includes
+   - New excludes are added to existing excludes
+   - New instruction replaces or appends to existing instruction
+   - Target from redo overrides if specified (not global_context)"
+  [last-cmd redo-cmd]
+  (let [;; Merge includes (add new ones)
+        merged-includes (vec (distinct (concat (:includes last-cmd [])
+                                                (:includes redo-cmd []))))
+        ;; Merge excludes (add new ones)
+        merged-excludes (vec (distinct (concat (:excludes last-cmd [])
+                                                (:excludes redo-cmd []))))
+        ;; Handle instruction - append if both exist, otherwise use whichever exists
+        merged-instruction (cond
+                             (and (:instruction last-cmd) (:instruction redo-cmd))
+                             (str (:instruction last-cmd) "\n\nADDITIONAL: " (:instruction redo-cmd))
+
+                             (:instruction redo-cmd)
+                             (:instruction redo-cmd)
+
+                             :else
+                             (:instruction last-cmd))
+        ;; Target - use redo's target if specified, otherwise keep original
+        merged-target (if (and (:target redo-cmd)
+                               (not= "global_context" (:target redo-cmd)))
+                        (:target redo-cmd)
+                        (:target last-cmd))]
+    (assoc last-cmd
+           :includes merged-includes
+           :excludes merged-excludes
+           :instruction merged-instruction
+           :target merged-target
+           :is-redo true
+           :original-cmd last-cmd)))
 
 (defn generate-job-id []
   (str (java.util.UUID/randomUUID)))
@@ -292,17 +471,26 @@
       :else (str n " files"))))
 
 
+;; Heartbeat interval for status updates during long operations (15 seconds)
+(def heartbeat-interval-ms 15000)
+
+
 (defn spawn-claude
   "Spawn a Claude instance with the given prompt, return output.
 
    Uses env -i for clean environment isolation - only passes essential vars.
    This ensures the spawned Claude isn't affected by parent session config
-   (e.g., Bedrock vs direct API, nested Claude detection, etc.)."
-  [prompt & {:keys [timeout-ms working-dir tools permission-mode]
+   (e.g., Bedrock vs direct API, nested Claude detection, etc.).
+
+   Emits periodic heartbeat status updates to show the agent is still working.
+   
+   Enhanced with proper timeout handling and resource cleanup."
+  [prompt & {:keys [timeout-ms working-dir tools permission-mode agent-name]
              :or {timeout-ms 300000
                   working-dir worker-working-dir
                   tools worker-tools
-                  permission-mode worker-permission-mode}}]
+                  permission-mode worker-permission-mode
+                  agent-name "AGENT"}}]
   (log/log! :info "SPAWN CLAUDE" {:prompt-length (count prompt)
                                   :working-dir working-dir
                                   :timeout-ms timeout-ms
@@ -310,36 +498,92 @@
                                   :model worker-model
                                   :tools tools
                                   :permission-mode permission-mode})
-  (try
-    ;; Use env -i for clean spawn - only pass essential vars
-    ;; This isolates the child from parent Claude session config
-    (let [env-vars (str "PATH=\"$PATH\" "
-                        "HOME=\"$HOME\" "
-                        "ANTHROPIC_API_KEY=\"${ANTHROPIC_API_KEY:-}\" "
-                        "ANTHROPIC_MODEL=\"" worker-model "\" "
-                        "KCX_WORKER=true ")
-          cmd (str "env -i " env-vars
-                   claude-path
-                   " --print"
-                   " --permission-mode " permission-mode
-                   " --tools '" tools "'"
-                   " -p " (pr-str prompt)
-                   " < /dev/null")
-          _ (log/log! :debug "SPAWN CMD" {:cmd cmd})
-          result (p/shell {:out :string
-                           :err :string
-                           :dir working-dir}
-                          "sh" "-c" cmd)]
-      (log/log! :info "CLAUDE COMPLETE" {:exit (:exit result)
-                                         :output-length (count (:out result))})
-      {:success (zero? (:exit result))
-       :output (:out result)
-       :error (:err result)})
-    (catch Exception e
-      (log/log-error! "CLAUDE SPAWN FAILED" e)
-      {:success false
-       :output ""
-       :error (str e)})))
+  (let [proc (atom nil)
+        cleanup-fn (fn []
+                     (when-let [p @proc]
+                       (unregister-process p)
+                       (when (and (:exit p) (not (realized? (:exit p))))
+                         (try
+                           (.destroy (:proc p))
+                           (catch Exception e
+                             (log/log-error! "PROCESS CLEANUP FAILED" e))))))]
+    (try
+      ;; Use env -i for clean spawn - only pass essential vars with sanitization
+      ;; This isolates the child from parent Claude session config
+      (let [safe-model (sanitize-shell-arg worker-model)
+            safe-tools (sanitize-shell-arg tools)
+            safe-permission-mode (sanitize-shell-arg permission-mode)
+            safe-prompt (sanitize-shell-arg prompt)
+            safe-claude-path (sanitize-shell-arg claude-path)
+            env-vars (str "PATH=\"$PATH\" "
+                          "HOME=\"$HOME\" "
+                          "ANTHROPIC_API_KEY=\"${ANTHROPIC_API_KEY:-}\" "
+                          "ANTHROPIC_MODEL=\"" safe-model "\" "
+                          "KCX_WORKER=true ")
+            cmd (str "env -i " env-vars
+                     safe-claude-path
+                     " --print"
+                     " --permission-mode " safe-permission-mode
+                     " --tools '" safe-tools "'"
+                     " -p " (pr-str safe-prompt)
+                     " < /dev/null")
+            _ (log/log! :debug "SPAWN CMD" {:cmd cmd})
+            spawn-start (System/currentTimeMillis)
+            ;; Start process asynchronously with timeout
+            p (p/process {:out :string
+                          :err :string
+                          :dir working-dir}
+                         "sh" "-c" cmd)]
+        
+        (reset! proc p)
+        (register-process p)
+
+        ;; Poll for completion with heartbeat and timeout
+        (loop [last-heartbeat spawn-start]
+          (let [now (System/currentTimeMillis)
+                elapsed (- now spawn-start)
+                elapsed-since-heartbeat (- now last-heartbeat)]
+            (cond
+              ;; Timeout reached
+              (>= elapsed timeout-ms)
+              (do
+                (log/log! :warn "CLAUDE TIMEOUT" {:timeout-ms timeout-ms
+                                                  :elapsed-ms elapsed})
+                (cleanup-fn)
+                {:success false
+                 :output ""
+                 :error (str "Process timed out after " (format-elapsed spawn-start))})
+
+              ;; Process completed
+              (not (.isAlive (:proc p)))
+              (let [result @p]
+                (log/log! :info "CLAUDE COMPLETE" {:exit (:exit result)
+                                                   :output-length (count (:out result))
+                                                   :elapsed-ms elapsed})
+                (detail! agent-name "completed in" (format-elapsed spawn-start))
+                (cleanup-fn)
+                {:success (zero? (:exit result))
+                 :output (:out result)
+                 :error (:err result)})
+
+              ;; Time for heartbeat
+              (>= elapsed-since-heartbeat heartbeat-interval-ms)
+              (do
+                (detail! "  ⋯" agent-name "working..." (str "[" (format-elapsed spawn-start) "]"))
+                (Thread/sleep 1000)
+                (recur now))
+
+              ;; Keep waiting
+              :else
+              (do
+                (Thread/sleep 1000)
+                (recur last-heartbeat))))))
+      (catch Exception e
+        (cleanup-fn)
+        (log/log-error! "CLAUDE SPAWN FAILED" e)
+        {:success false
+         :output ""
+         :error (str e)}))))
 
 
 (defn run-worker
@@ -351,7 +595,7 @@
                                           :target (:target cmd)
                                           :iteration iteration
                                           :has-feedback (some? reviewer-feedback)})
-        result (spawn-claude prompt)]
+        result (spawn-claude prompt :agent-name "WORKER")]
     (if (:success result)
       (let [parsed (parse-worker-result (:output result))]
         (log/log! :info "WORKER DONE" parsed)
@@ -367,7 +611,7 @@
   [worker-result]
   (let [prompt (build-reviewer-prompt worker-result (:files-changed worker-result))
         _ (log/log! :info "REVIEWER START" {:files (:files-changed worker-result)})
-        result (spawn-claude prompt :timeout-ms 120000)] ; 2 min for review
+        result (spawn-claude prompt :timeout-ms 120000 :agent-name "REVIEWER")] ; 2 min for review
     (if (:success result)
       (let [parsed (parse-review-result (:output result))]
         (log/log! :info "REVIEWER DONE" parsed)
@@ -379,17 +623,20 @@
 (defn run-curator
   "Update memory bank with task result"
   [cmd worker-result review-result]
-  (let [current-state (state/load-state)
-        updated-state (-> current-state
-                          (state/increment-command-count)
-                          (state/add-memory-entry
-                            {:action (:verb cmd)
-                             :target (or (:target cmd) (str/join ", " (:files-changed worker-result)))
-                             :description (:summary worker-result)
-                             :priority (if (= "approve" (:verdict review-result)) :normal :high)}))]
-    (state/save-state! updated-state)
-    (log/log! :info "CURATOR DONE" {:command-count (:command-count updated-state)
-                                    :memory-size (count (:memory updated-state))})))
+  (try
+    (let [current-state (state/load-state)
+          updated-state (-> current-state
+                            (state/increment-command-count)
+                            (state/add-memory-entry
+                              {:action (:verb cmd)
+                               :target (or (:target cmd) (str/join ", " (:files-changed worker-result)))
+                               :description (:summary worker-result)
+                               :priority (if (= "approve" (:verdict review-result)) :normal :high)}))]
+      (state/save-state! updated-state)
+      (log/log! :info "CURATOR DONE" {:command-count (:command-count updated-state)
+                                      :memory-size (count (:memory updated-state))}))
+    (catch Exception e
+      (log/log-error! "CURATOR FAILED" e))))
 
 
 ;; ============================================================================
@@ -398,8 +645,9 @@
 
 (defn build-tester-prompt
   "Build a prompt for autonomous test creation.
-   Includes memory context of past test patterns and issues."
-  [{:keys [verb target includes excludes] :as cmd}]
+   Includes memory context of past test patterns and issues.
+   Supports :instruction field for natural language context."
+  [{:keys [verb target includes excludes instruction] :as cmd}]
   (let [target-str (if (and target (not= target "global_context"))
                      (str "starting from " target)
                      "across the codebase")
@@ -410,6 +658,8 @@
         memory-context (state/build-memory-context cmd)]
     (str
       "You are TESTER, an autonomous testing agent. Write " (if tdd-mode? "TDD" "comprehensive") " tests " target-str ".\n"
+      (when instruction
+        (str "\n## INSTRUCTION\n" instruction "\n"))
       (when memory-context
         (str "\n" memory-context "\n"))
       (when (seq constraints)
@@ -449,7 +699,7 @@
   [cmd]
   (let [prompt (build-tester-prompt cmd)
         _ (log/log! :info "TESTER START" {:verb (:verb cmd) :target (:target cmd)})
-        result (spawn-claude prompt :tools "Read,Write,Edit,Glob,Grep")]
+        result (spawn-claude prompt :tools "Read,Write,Edit,Glob,Grep" :agent-name "TESTER")]
     (if (:success result)
       (let [parsed (parse-tester-result (:output result))]
         (log/log! :info "TESTER DONE" parsed)
@@ -471,6 +721,7 @@
          :output (:out result)
          :error (:err result)})
       (catch Exception e
+        (log/log-error! "TEST COMMAND FAILED" e)
         {:success false
          :output ""
          :error (str e)}))))
@@ -504,8 +755,9 @@
 
 (defn build-architect-prompt
   "Build a prompt for autonomous architectural planning.
-   Includes memory context of past architectural decisions."
-  [{:keys [verb target includes excludes] :as cmd}]
+   Includes memory context of past architectural decisions.
+   Supports :instruction field for natural language context."
+  [{:keys [verb target includes excludes instruction] :as cmd}]
   (let [action (case verb
                  "plan" "Create an implementation plan"
                  "design" "Design the system architecture"
@@ -521,6 +773,8 @@
         memory-context (state/build-memory-context cmd)]
     (str
       "You are ARCHITECT, an autonomous design agent. " action target-str ".\n"
+      (when instruction
+        (str "\n## INSTRUCTION\n" instruction "\n"))
       (when memory-context
         (str "\n" memory-context "\n"))
       (when (seq constraints)
@@ -563,7 +817,7 @@
   [cmd]
   (let [prompt (build-architect-prompt cmd)
         _ (log/log! :info "ARCHITECT START" {:verb (:verb cmd) :target (:target cmd)})
-        result (spawn-claude prompt :tools "Read,Write,Glob,Grep")]
+        result (spawn-claude prompt :tools "Read,Write,Glob,Grep" :agent-name "ARCHITECT")]
     (if (:success result)
       (let [parsed (parse-architect-result (:output result))]
         (log/log! :info "ARCHITECT DONE" parsed)
@@ -645,7 +899,7 @@
   [worker-result cmd]
   (let [prompt (build-tester-validation-prompt worker-result cmd)
         _ (log/log! :info "TESTER VALIDATION START" {:files (:files-changed worker-result)})
-        result (spawn-claude prompt :tools "Read,Write,Edit,Glob,Grep,Bash")]
+        result (spawn-claude prompt :tools "Read,Write,Edit,Glob,Grep,Bash" :agent-name "TESTER")]
     (if (:success result)
       (let [parsed (parse-tester-validation (:output result))]
         (log/log! :info "TESTER VALIDATION DONE" parsed)
@@ -655,339 +909,240 @@
 
 
 ;; ============================================================================
-;; Workflow Execution
+;; Workflow Handlers
 ;; ============================================================================
+;; Each handler conforms to: (fn [cmd artifacts] -> {:success bool ...})
+;; The state machine in kcx.workflow controls sequencing.
+;; Handlers control capability — they spawn fully-capable Claude instances.
 
-(defn run-worker-tester-loop
-  "Inner loop: Worker ↔ Tester until tests pass or max iterations.
-   Returns {:success bool :phase :worker|:tester :worker {...} :tester {...} :attempts int}"
-  [cmd feedback]
-  (loop [attempt 1
-         tester-feedback nil]
-    ;; Combine external feedback with tester feedback
-    (let [combined-feedback (cond
-                              (and feedback tester-feedback)
-                              (str feedback "\nTESTER: " tester-feedback)
-                              feedback feedback
-                              tester-feedback (str "TESTER: " tester-feedback)
-                              :else nil)
-          _ (when *current-job*
-              (update-job-phase! *current-job* :worker {:agent :worker :iteration attempt}))
-          _ (status! "→ WORKER" (when (> attempt 1) (str "(attempt " attempt ")")))
-          worker-result (run-worker cmd :reviewer-feedback combined-feedback :iteration attempt)
-          files (format-files-changed (:files-changed worker-result))]
 
-      (if (= "failed" (:status worker-result))
+(defn- extract-feedback
+  "Extract feedback from prior artifacts for retry context.
+   Looks at tester and reviewer results from previous iterations."
+  [artifacts]
+  (let [test-feedback   (when-let [t (or (:test artifacts) (:validate artifacts))]
+                          (when-not (:success t) (:feedback t)))
+        review-feedback (when-let [r (:review artifacts)]
+                          (when-not (:success r) (:feedback r)))
+        arch-context    (when-let [a (:architect artifacts)]
+                          (str "ARCHITECT SPEC:\n" (:summary a)
+                               "\nFiles: " (str/join ", " (:files-changed a))))]
+    (let [parts (remove nil? [arch-context
+                              (when test-feedback (str "TESTER: " test-feedback))
+                              (when review-feedback (str "REVIEWER: " review-feedback))])]
+      (when (seq parts)
+        (str/join "\n" parts)))))
+
+(defn handle-worker
+  "Worker handler — implements code changes.
+   Reads feedback from prior tester/reviewer artifacts for retries.
+   Uses natural language prompt builder when cmd has :prompt key."
+  [cmd artifacts]
+  (let [feedback (extract-feedback artifacts)
+        prompt (if (:prompt cmd)
+                 (build-natural-prompt cmd :reviewer-feedback feedback)
+                 (build-worker-prompt cmd :reviewer-feedback feedback))]
+    (status! "→ WORKER")
+    (when *current-job*
+      (update-job-phase! *current-job* :worker {:agent :worker}))
+    (let [spawn-result (spawn-claude prompt :agent-name "WORKER")]
+      (if (:success spawn-result)
+        (let [parsed (parse-worker-result (:output spawn-result))]
+          (log/log! :info "WORKER DONE" parsed)
+          (status! "  WORKER edited" (format-files-changed (:files-changed parsed)))
+          (detail! (:summary parsed))
+          (if (= "failed" (:status parsed))
+            {:success false :files-changed [] :summary (:summary parsed)}
+            {:success true
+             :files-changed (:files-changed parsed)
+             :summary (:summary parsed)
+             :raw-output (:output spawn-result)}))
         (do
           (status! "✗ WORKER failed")
-          (detail! (:summary worker-result))
-          {:success false :phase :worker :worker worker-result :attempts attempt})
+          {:success false
+           :summary (str "Worker spawn failed: " (:error spawn-result))
+           :files-changed []})))))
 
+(defn handle-tester
+  "Tester handler — validates worker's changes or writes initial tests.
+   In TDD write-tests phase (no prior :work/:implement), writes new tests.
+   In validation phase (has prior work), validates changes."
+  [cmd artifacts]
+  (let [;; Determine if this is a write-tests or validation phase
+        worker-result (or (:work artifacts) (:implement artifacts))]
+    (status! "→ TESTER" (if worker-result "validating..." "writing tests..."))
+    (when *current-job*
+      (update-job-phase! *current-job* :tester {:agent :tester}))
+    (if worker-result
+      ;; Validation mode: check worker's changes
+      (let [result (run-tester-validation worker-result cmd)]
+        (if (= "pass" (:verdict result))
+          (do
+            (status! "  TESTER passed")
+            (detail! (:feedback result))
+            {:success true :verdict "pass" :feedback (:feedback result)})
+          (do
+            (status! "  TESTER failed")
+            (detail! (:feedback result))
+            {:success false :verdict "fail" :feedback (:feedback result)})))
+      ;; Write-tests mode: create tests from scratch
+      (let [result (run-tester cmd)]
+        (if (= "failed" (:status result))
+          (do
+            (status! "✗ TESTER failed")
+            (detail! (:summary result))
+            {:success false :summary (:summary result) :files-changed []})
+          (do
+            (status! "  TESTER wrote" (format-files-changed (:files-changed result)))
+            (detail! (:summary result))
+            {:success true
+             :files-changed (:files-changed result)
+             :summary (:summary result)
+             :raw-output (:raw-output result)}))))))
+
+(defn handle-reviewer
+  "Reviewer handler — reviews worker's changes, approves or rejects.
+   Reads worker artifacts for file list and summary."
+  [cmd artifacts]
+  (let [worker-result (or (:work artifacts) (:implement artifacts))
+        ;; Include architect files if present
+        arch-files (get-in artifacts [:architect :files-changed])
+        all-files (distinct (concat (or arch-files [])
+                                    (or (:files-changed worker-result) [])))]
+    (status! "→ REVIEWER reviewing...")
+    (when *current-job*
+      (update-job-phase! *current-job* :reviewer {:agent :reviewer}))
+    (let [review-input (assoc worker-result :files-changed all-files)
+          result (run-reviewer review-input)]
+      (if (= "approve" (:verdict result))
         (do
-          (status! "  WORKER edited" files)
-          (detail! (:summary worker-result))
+          (status! "  REVIEWER approved")
+          (detail! (:feedback result))
+          {:success true :verdict "approve" :feedback (:feedback result)})
+        (do
+          (status! "  REVIEWER rejected")
+          (detail! (:feedback result))
+          {:success false :verdict (:verdict result) :feedback (:feedback result)})))))
 
-          ;; Tester validation
-          (when *current-job*
-            (update-job-phase! *current-job* :tester {:agent :tester :iteration attempt}))
-          (status! "→ TESTER validating...")
-          (let [tester-result (run-tester-validation worker-result cmd)]
+(defn build-curator-prompt
+  "Build a prompt for curator to intelligently update the memory bank."
+  [cmd artifacts current-state]
+  (let [worker-result (or (:work artifacts) (:implement artifacts))
+        review-result (:review artifacts)
+        memory-str (with-out-str (pprint/pprint current-state))]
+    (str
+      "You are CURATOR, the memory bank manager. Your job is intelligent memory compaction.\n\n"
+      "## CURRENT MEMORY BANK\n```edn\n" memory-str "\n```\n\n"
+      "## WHAT JUST HAPPENED\n"
+      "Action: " (:verb cmd) (when (:target cmd) (str " @" (:target cmd))) "\n"
+      (when (:summary worker-result) (str "Summary: " (:summary worker-result) "\n"))
+      (when (:files-changed worker-result) (str "Files changed: " (str/join ", " (:files-changed worker-result)) "\n"))
+      (when (:feedback review-result) (str "Reviewer feedback: " (:feedback review-result) "\n"))
+      "\n## YOUR TASK\n"
+      "Update the memory bank state. You must:\n"
+      "1. Increment :command-count\n"
+      "2. Add a new entry to :memory for this task\n"
+      "3. Review existing entries - reprioritize, edit, or remove stale/incorrect ones\n"
+      "4. Prune entries that are no longer relevant\n"
+      "5. Correct any entries that this task's results invalidate\n\n"
+      "Priority levels: :critical (architecture, never expires), :high (100 cmd TTL), :normal (30 cmd TTL), :low (10 cmd TTL)\n\n"
+      "## OUTPUT\n"
+      "Output ONLY the updated EDN state. No explanation, no markdown fences.\n"
+      "The output must be valid EDN matching the structure above.\n"
+      "Begin.")))
 
-            (if (= "pass" (:verdict tester-result))
-              (do
-                (status! "  TESTER passed")
-                (detail! (:feedback tester-result))
-                {:success true :worker worker-result :tester tester-result :attempts attempt})
-
-              ;; Tests fail - retry or give up
-              (if (< attempt max-workflow-iterations)
-                (do
-                  (status! "  TESTER failed - retrying" (str "(" (inc attempt) "/" max-workflow-iterations ")"))
-                  (detail! (:feedback tester-result))
-                  (recur (inc attempt) (:feedback tester-result)))
-                (do
-                  (status! "✗ TESTER failed after" attempt "attempts")
-                  (detail! (:feedback tester-result))
-                  {:success false :phase :tester :worker worker-result :tester tester-result :attempts attempt})))))))))
-
-
-(defn execute-workflow
-  "Run WORKER → TESTER → REVIEWER → CURATOR chain with nested loops.
-
-   Inner loop: Worker ↔ Tester (until tests pass)
-   Outer loop: If Reviewer rejects, back to Worker → Tester cycle
-
-   Returns {:success bool :worker {...} :tester {...} :reviewer {...} :iterations {...}}"
-  [cmd]
-  (log/log! :info "WORKFLOW START" cmd)
-  (let [job-id (start-job! cmd)]
-    (binding [*workflow-start* (System/currentTimeMillis)
-              *current-job* job-id]
-      (status! "━━━" (str/upper-case (:verb cmd)) (when-let [t (:target cmd)] (str "@" t)) "━━━")
-
-      (loop [cycle 1
-             reviewer-feedback nil]
-        (when (> cycle 1)
-          (status! "↻ CYCLE" (str cycle "/" max-workflow-iterations)))
-
-        ;; Run Worker → Tester inner loop
-        (update-job-phase! job-id :worker-tester)
-        (let [wt-result (run-worker-tester-loop cmd reviewer-feedback)]
-
-          (if-not (:success wt-result)
-            ;; Worker or Tester failed
+(defn handle-curator
+  "Curator handler — spawns Claude to intelligently update the memory bank.
+   Claude reviews the full memory state and makes judgment calls about
+   what to add, edit, reprioritize, or prune."
+  [cmd artifacts]
+  (status! "→ CURATOR updating memory...")
+  (when *current-job*
+    (update-job-phase! *current-job* :curator {:agent :curator}))
+  (try
+    (let [current-state (state/load-state)
+          prompt (build-curator-prompt cmd artifacts current-state)
+          result (spawn-claude prompt
+                              :timeout-ms 120000
+                              :tools "Read"
+                              :agent-name "CURATOR")]
+      (if (:success result)
+        (let [output (str/trim (:output result))
+              ;; Try to parse the EDN output from curator
+              new-state (try
+                          (edn/read-string output)
+                          (catch Exception _
+                            nil))]
+          (if (and new-state (state/validate-state new-state))
             (do
-              (complete-job! job-id false)
-              (assoc wt-result :cycle cycle))
+              (state/save-state! new-state)
+              (log/log! :info "CURATOR DONE (intelligent)" {:command-count (:command-count new-state)
+                                                             :memory-size (count (:memory new-state))})
+              (status! "  CURATOR updated memory")
+              {:success true :updated true :intelligent true})
+            ;; Fallback to mechanical update
+            (let [worker-result (or (:work artifacts) (:implement artifacts))
+                  review-result (:review artifacts)
+                  updated (-> current-state
+                              (state/increment-command-count)
+                              (state/add-memory-entry
+                                {:action (:verb cmd)
+                                 :target (or (:target cmd) (str/join ", " (:files-changed worker-result)))
+                                 :description (:summary worker-result)
+                                 :priority (if (= "approve" (:verdict review-result)) :normal :high)}))]
+              (state/save-state! updated)
+              (log/log! :info "CURATOR DONE (fallback)" {:command-count (:command-count updated)
+                                                          :memory-size (count (:memory updated))})
+              (status! "  CURATOR updated memory")
+              {:success true :updated true :intelligent false})))
+        ;; Spawn failed - use mechanical fallback
+        (let [worker-result (or (:work artifacts) (:implement artifacts))
+              review-result (:review artifacts)
+              updated (-> (state/load-state)
+                          (state/increment-command-count)
+                          (state/add-memory-entry
+                            {:action (:verb cmd)
+                             :target (or (:target cmd) (str/join ", " (:files-changed worker-result)))
+                             :description (:summary worker-result)
+                             :priority (if (= "approve" (:verdict review-result)) :normal :high)}))]
+          (state/save-state! updated)
+          (log/log! :info "CURATOR DONE (spawn-failed fallback)" {})
+          (status! "  CURATOR updated memory (fallback)")
+          {:success true :updated true :intelligent false})))
+    (catch Exception e
+      (log/log-error! "CURATOR FAILED" e)
+      (status! "✗ CURATOR failed")
+      ;; Curator failure shouldn't fail the whole workflow
+      {:success true :updated false :error (str e)})))
 
-            ;; Worker/Tester passed - proceed to Reviewer
-            (do
-              (update-job-phase! job-id :reviewer)
-              (status! "→ REVIEWER reviewing...")
-              (let [review-result (run-reviewer (:worker wt-result))]
-
-                (cond
-                  ;; Approved
-                  (= "approve" (:verdict review-result))
-                  (do
-                    (status! "  REVIEWER approved")
-                    (detail! (:feedback review-result))
-                    (update-job-phase! job-id :curator)
-                    (run-curator cmd (:worker wt-result) review-result)
-                    (status! "→ CURATOR updated memory")
-                    (status! "✓ DONE")
-                    (complete-job! job-id true)
-                    {:success true
-                     :worker (:worker wt-result)
-                     :tester (:tester wt-result)
-                     :reviewer review-result
-                     :iterations {:cycle cycle :worker-attempts (:attempts wt-result)}})
-
-                  ;; Rejected - restart Worker → Tester cycle
-                  (and (contains? #{"reject" "needs_revision"} (:verdict review-result))
-                       (< cycle max-workflow-iterations))
-                  (do
-                    (status! "  REVIEWER rejected - restarting cycle")
-                    (detail! (:feedback review-result))
-                    (recur (inc cycle) (str "REVIEWER: " (:feedback review-result))))
-
-                  ;; Max cycles reached
-                  :else
-                  (do
-                    (status! "✗ REJECTED after" cycle "cycles")
-                    (complete-job! job-id false)
-                    {:success false
-                     :phase :reviewer
-                     :worker (:worker wt-result)
-                     :tester (:tester wt-result)
-                     :reviewer review-result
-                     :iterations {:cycle cycle :worker-attempts (:attempts wt-result)}}))))))))))
-
-
-(defn execute-tester-workflow
-  "Run TDD workflow: TESTER → RUN → WORKER → RUN → REVIEWER → CURATOR
-
-   1. Tester writes failing tests
-   2. Run tests to verify they fail
-   3. Worker implements to pass tests
-   4. Run tests to verify they pass
-   5. Reviewer validates
-   6. Curator updates memory
-
-   Returns {:success bool :tester {...} :worker {...} :reviewer {...} :iterations int}"
-  [cmd]
-  (log/log! :info "TDD WORKFLOW START" cmd)
-  (status! "━━━ TDD" (str/upper-case (:verb cmd)) (when-let [t (:target cmd)] (str "@" t)) "━━━")
-
-  ;; Phase 1: TESTER writes tests
-  (status! "→ TESTER writing tests...")
-  (let [tester-result (run-tester cmd)]
-
-    (if (= "failed" (:status tester-result))
-      (do
-        (status! "✗ TESTER failed")
-        (detail! (:summary tester-result))
-        {:success false :phase :tester :result tester-result})
-
-      ;; Phase 2: Verify tests fail (Red)
-      (do
-        (status! "  TESTER wrote" (format-files-changed (:files-changed tester-result)))
-        (detail! (:summary tester-result))
-        (let [test-run-1 (run-tests-command playground-dir)]
-          (status! "→ TEST RUN (red phase)" (if (:success test-run-1) "pass ⚠️" "fail ✓"))
-
-        ;; We expect tests to fail initially (TDD Red phase)
-        ;; If they pass, that's unexpected but we continue
-
-          ;; Phase 3: WORKER implements
-          (loop [iteration 1
-                 feedback nil]
-            (status! "→ WORKER implementing" (when (> iteration 1) (str "(attempt " iteration ")")))
-
-          (let [worker-prompt (if feedback
-                                ;; Retry with feedback
-                                (build-worker-prompt
-                                  (assoc cmd :verb "fix")
-                                  :reviewer-feedback feedback
-                                  :iteration iteration)
-                                ;; First attempt - use test context
-                                (build-worker-from-tests-prompt
-                                  cmd
-                                  (:files-changed tester-result)
-                                  (:output test-run-1)))
-                worker-result (spawn-claude worker-prompt)]
-
-            (if-not (:success worker-result)
-              (do
-                (status! "✗ WORKER failed")
-                {:success false :phase :worker :result worker-result :iterations iteration})
-
-              (let [parsed-worker (parse-worker-result (:output worker-result))]
-                (status! "  WORKER edited" (format-files-changed (:files-changed parsed-worker)))
-                (detail! (:summary parsed-worker))
-
-                ;; Phase 4: Run tests again
-                (let [test-run-2 (run-tests-command playground-dir)]
-                  (status! "→ TEST RUN (green phase)" (if (:success test-run-2) "pass ✓" "fail"))
-
-                  (if-not (:success test-run-2)
-                    ;; Tests still failing - retry worker
-                    (if (< iteration max-workflow-iterations)
-                      (do
-                        (status! "  Tests failing - retrying" (str "(" (inc iteration) "/" max-workflow-iterations ")"))
-                        (recur (inc iteration) (str "Tests still failing:\n" (subs (:output test-run-2) 0 (min 500 (count (:output test-run-2)))))))
-                      (do
-                        (status! "✗ TESTS failed after" iteration "attempts")
-                        {:success false
-                         :phase :tests
-                         :tester tester-result
-                         :worker parsed-worker
-                         :iterations iteration}))
-
-                    ;; Tests passing - proceed to reviewer
-                    (do
-                      (status! "→ REVIEWER reviewing...")
-                      (let [review-result (run-reviewer (assoc parsed-worker
-                                                               :files-changed (concat (:files-changed tester-result)
-                                                                                      (:files-changed parsed-worker))))]
-
-                        (cond
-                          ;; Approved
-                          (= "approve" (:verdict review-result))
-                          (do
-                            (status! "  REVIEWER approved")
-                            (detail! (:feedback review-result))
-                            (run-curator cmd parsed-worker review-result)
-                            (status! "→ CURATOR updated memory")
-                            (status! "✓ DONE")
-                            {:success true
-                             :tester tester-result
-                             :worker parsed-worker
-                             :reviewer review-result
-                             :iterations iteration})
-
-                          ;; Rejected but can retry
-                          (and (contains? #{"reject" "needs_revision"} (:verdict review-result))
-                               (< iteration max-workflow-iterations))
-                          (do
-                            (status! "  REVIEWER rejected - retrying" (str "(attempt " (inc iteration) ")"))
-                            (detail! (:feedback review-result))
-                            (recur (inc iteration) (:feedback review-result)))
-
-                          ;; Rejected and max iterations
-                          :else
-                          (do
-                            (status! "✗ REJECTED after" iteration "attempts")
-                            {:success false
-                             :phase :reviewer
-                             :tester tester-result
-                             :worker parsed-worker
-                             :reviewer review-result
-                             :iterations iteration})))))))))))))))
-
-
-(defn execute-architect-workflow
-  "Run ARCHITECT → WORKER → TESTER → REVIEWER → CURATOR workflow.
-
-   1. Architect creates specifications/plans
-   2. Worker implements based on specs (loops with Tester until tests pass)
-   3. Reviewer validates implementation
-   4. Curator updates memory
-
-   Returns {:success bool :architect {...} :worker {...} :tester {...} :reviewer {...} :iterations {...}}"
-  [cmd]
-  (log/log! :info "ARCHITECT WORKFLOW START" cmd)
-  (status! "━━━ ARCHITECT" (str/upper-case (:verb cmd)) (when-let [t (:target cmd)] (str "@" t)) "━━━")
-
-  ;; Phase 1: ARCHITECT creates specs
+(defn handle-architect
+  "Architect handler — creates specifications and plans.
+   Returns specs that the worker will implement."
+  [cmd artifacts]
   (status! "→ ARCHITECT creating specifications...")
-  (let [architect-result (run-architect cmd)]
-
-    (if (= "failed" (:status architect-result))
+  (when *current-job*
+    (update-job-phase! *current-job* :architect {:agent :architect}))
+  (let [result (run-architect cmd)]
+    (if (= "failed" (:status result))
       (do
         (status! "✗ ARCHITECT failed")
-        (detail! (:summary architect-result))
-        {:success false :phase :architect :result architect-result})
-
-      ;; Phase 2-4: Worker → Tester → Reviewer cycle
+        (detail! (:summary result))
+        {:success false :summary (:summary result) :files-changed []})
       (do
-        (status! "  ARCHITECT wrote" (format-files-changed (:files-changed architect-result)))
-        (detail! (:summary architect-result))
-        (loop [cycle 1
-               reviewer-feedback nil]
-          (when (> cycle 1)
-            (status! "↻ CYCLE" (str cycle "/" max-workflow-iterations)))
+        (status! "  ARCHITECT wrote" (format-files-changed (:files-changed result)))
+        (detail! (:summary result))
+        {:success true
+         :files-changed (:files-changed result)
+         :summary (:summary result)
+         :raw-output (:raw-output result)}))))
 
-        ;; Combine architect context with any reviewer feedback
-        (let [context (str "ARCHITECT SPEC:\n" (:summary architect-result)
-                           "\nFiles: " (str/join ", " (:files-changed architect-result))
-                           (when reviewer-feedback (str "\n\nREVIEWER: " reviewer-feedback)))
-              wt-result (run-worker-tester-loop cmd context)]
 
-          (if-not (:success wt-result)
-            ;; Worker or Tester failed
-            (assoc wt-result :architect architect-result :cycle cycle)
-
-            ;; Worker/Tester passed - proceed to Reviewer
-            (do
-              (status! "→ REVIEWER reviewing...")
-              (let [review-result (run-reviewer (assoc (:worker wt-result)
-                                                       :files-changed (concat (:files-changed architect-result)
-                                                                              (:files-changed (:worker wt-result)))))]
-
-                (cond
-                  ;; Approved
-                  (= "approve" (:verdict review-result))
-                  (do
-                    (status! "  REVIEWER approved")
-                    (detail! (:feedback review-result))
-                    (run-curator cmd (:worker wt-result) review-result)
-                    (status! "→ CURATOR updated memory")
-                    (status! "✓ DONE")
-                    {:success true
-                     :architect architect-result
-                     :worker (:worker wt-result)
-                     :tester (:tester wt-result)
-                     :reviewer review-result
-                     :iterations {:cycle cycle :worker-attempts (:attempts wt-result)}})
-
-                  ;; Rejected - restart Worker → Tester cycle
-                  (and (contains? #{"reject" "needs_revision"} (:verdict review-result))
-                       (< cycle max-workflow-iterations))
-                  (do
-                    (status! "  REVIEWER rejected - restarting cycle")
-                    (detail! (:feedback review-result))
-                    (recur (inc cycle) (:feedback review-result)))
-
-                  ;; Max cycles reached
-                  :else
-                  (do
-                    (status! "✗ REJECTED after" cycle "cycles")
-                    {:success false
-                     :phase :reviewer
-                     :architect architect-result
-                     :worker (:worker wt-result)
-                     :tester (:tester wt-result)
-                     :reviewer review-result
-                     :iterations {:cycle cycle :worker-attempts (:attempts wt-result)}})))))))))))
-
+(defn build-handlers
+  "Build the handlers map for the workflow state machine.
+   Each handler: (fn [cmd artifacts] -> {:success bool ...})"
+  []
+  {:worker    handle-worker
+   :tester    handle-tester
+   :reviewer  handle-reviewer
+   :curator   handle-curator
+   :architect handle-architect})

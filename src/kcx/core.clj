@@ -3,6 +3,7 @@
     [cheshire.core :as json]
     [clojure.java.io :as io]
     [clojure.pprint :as pprint]
+    [clojure.string :as str]
     [kcx.dsl :as dsl]
     [kcx.logging :as log]
     [kcx.orchestrator :as orchestrator]
@@ -17,11 +18,9 @@
                  "kcx_command"
                  (let [cmd (get args "command")]
                    (log/log! :debug "COMMAND" {:input cmd})
-                   ;; Try XML system commands first, then DSL
-                   (or (orchestrator/execute-xml-command cmd)
-                       (let [parsed (dsl/parse-command cmd)]
-                         (log/log! :debug "DSL PARSE" {:parsed parsed})
-                         (orchestrator/execute-command parsed))))
+                   (let [parsed (dsl/parse-command cmd)]
+                     (log/log! :debug "DSL PARSE" {:parsed parsed})
+                     (orchestrator/execute-command parsed)))
 
                  "read_state"
                  (let [current-state (state/load-state)]
@@ -51,7 +50,7 @@
                  "initialize"
                  {:protocolVersion "2024-11-05"
                   :capabilities {:tools {}}
-                  :serverInfo {:name "kcx" :version "1.0"}}
+                  :serverInfo {:name "kcx" :version (str/trim (slurp "VERSION"))}}
 
                  ;; Notifications don't get responses
                  "notifications/initialized" nil

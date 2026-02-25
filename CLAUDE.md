@@ -8,19 +8,40 @@ This project is a KCX MCP server. You have access to KCX tools via MCP.
 
 Do NOT interpret these as regular prompts. Do NOT use your built-in tools. Route them directly to KCX.
 
-### Command Format
+### Command Formats
 
+KCX supports multiple input modes:
+
+**1. Natural Language:**
+```
+kcx "your task description here"
+```
+
+**2. DSL Commands:**
 ```
 kcx !<verb> @<target> +<include> -<exclude> ><output> &<agent>
+```
+
+**3. DSL + Natural Language (combine precision with context):**
+```
+kcx !<verb> @<target> +<include> "additional instructions"
+```
+
+**4. Redo (modify and re-run the last command):**
+```
+kcx !redo +add -remove "new instructions"
 ```
 
 ### Examples
 
 | User Input | Action |
 |------------|--------|
-| `kcx !status` | Call `mcp__kcx__kcx_command` with `{"command": "kcx !status"}` |
-| `kcx !fix @calculator.clj +error-handling` | Call `mcp__kcx__kcx_command` with `{"command": "kcx !fix @calculator.clj +error-handling"}` |
-| `kcx !debug @api.clj +logging -println` | Call `mcp__kcx__kcx_command` with `{"command": "kcx !debug @api.clj +logging -println"}` |
+| `kcx "add error handling to the calculator"` | Natural language prompt |
+| `kcx !gen +web-api "build out a new campaign list endpoint"` | DSL with instruction |
+| `kcx !fix @calculator.clj +error-handling "ensure division by zero is handled"` | Full DSL + instruction |
+| `kcx !redo -docstrings` | Re-run last task, excluding docstrings |
+| `kcx !redo "don't modify foo.clj"` | Re-run with additional instruction |
+| `kcx !status` | Status command |
 
 ### DSL Symbols
 
@@ -32,6 +53,7 @@ kcx !<verb> @<target> +<include> -<exclude> ><output> &<agent>
 | `-` | Exclude constraint | `-println` |
 | `>` | Output redirect | `>output.clj` |
 | `&` | Agent preference | `&reviewer` |
+| `"..."` | Natural language instruction | `"build a REST endpoint"` |
 
 ### Verbs
 
@@ -41,6 +63,7 @@ kcx !<verb> @<target> +<include> -<exclude> ><output> &<agent>
 | `gen`, `create`, `edit`, `fix`, `build`, `debug` | Code implementation |
 | `test`, `tdd` | Testing |
 | `review`, `check`, `lint` | Code review |
+| `redo` | Re-run last command with modifications |
 
 ## Workflow Execution Protocol
 
@@ -59,12 +82,26 @@ WORKER → REVIEWER → CURATOR → DONE
 
 ### Output Format
 
-**MINIMAL OUTPUT.** Just status lines:
+**Status updates during execution:**
 ```
-→ WORKER FIX @calculator.clj
-→ REVIEWER APPROVED
-→ CURATOR Memory updated
+━━━ PROMPT ━━━
+Task: add error handling to the calculator
+→ WORKER
+  ⋯ WORKER working... [15s]
+  ⋯ WORKER working... [30s]
+  WORKER completed in 45s
+  WORKER edited 2 files
+→ TESTER validating...
+  TESTER passed
+→ REVIEWER reviewing...
+  REVIEWER approved
+→ CURATOR updated memory
 ✓ DONE
+
+═══ TASK COMPLETED ═══
+Files modified:
+  • src/calculator.clj
+  • test/calculator_test.clj
 ```
 
 ## Project Structure

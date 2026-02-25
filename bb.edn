@@ -1,8 +1,15 @@
-{:paths ["src"]
+{:paths ["src" "test"]
  :deps {cheshire/cheshire {:mvn/version "5.12.0"}}
  :tasks {start (load-file "kcx.clj")
 
          ;; Quick test for parsing without running the server
          parse (do (require '[kcx.dsl])
                    (clojure.pprint/pprint
-                    (kcx.dsl/parse-command (first *command-line-args*))))}}
+                    (kcx.dsl/parse-command (first *command-line-args*))))
+
+         ;; Run all tests
+         test (do (require '[clojure.test])
+                  (require '[kcx.workflow-test])
+                  (require '[kcx.orchestrator-test])
+                  (let [result (clojure.test/run-tests 'kcx.workflow-test 'kcx.orchestrator-test)]
+                    (System/exit (if (zero? (+ (:fail result) (:error result))) 0 1))))}}
