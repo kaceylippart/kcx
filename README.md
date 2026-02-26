@@ -58,36 +58,40 @@ bb test
 
 ## DSL
 
-KCX uses three symbols. Each token is a key into an expansion dictionary — `!review` doesn't mean "review", it expands into a full, curated prompt.
+Five symbols, plus inline natural language. Each token is a key into an expansion dictionary — `!review` doesn't mean "review", it expands into a full, curated prompt.
 
 ```
-kcx !verb @arg1 @arg2 +modifier "additional context"
+kcx !verb @file %value +modifier >directive and any natural language here
 ```
 
 | Symbol | Purpose | Example |
 |--------|---------|---------|
-| `!` | Verb (action) — expands to base prompt | `!fix`, `!review`, `!tdd` |
-| `@` | Argument — fills template params | `@calculator.clj`, `@divide-fn` |
-| `+` | Modifier — appends behavioral directives | `+thorough`, `+skip-tests` |
-| `"..."` | Natural language — additional context | `"the divide function has a bug"` |
+| `!` | Verb (action) — expands to base prompt | `!fix`, `!review`, `!explain` |
+| `@` | Positional param (file path, with autocomplete) | `@calculator.clj` |
+| `%` | Positional param (general value, no autocomplete) | `%workflows`, `%"multi word"` |
+| `+` | Modifier — appends behavioral directives to prompts | `+thorough`, `+no-hedge` |
+| `>` | Pipeline directive — changes workflow shape | `>skip-tests`, `>fast` |
 
-`@` arguments bind to the immediately preceding `!` or `+`. Standalone `@` is an error.
+`@` and `%` are interchangeable — both fill positional template params in order. Use `@` for file paths (leverages Claude's autocomplete), `%` for everything else. Quote multi-word values: `%"add error handling"`.
 
-Natural language works standalone too — it bypasses expansion entirely:
+Everything that isn't a symbol token is natural language, passed as-is:
 
 ```bash
-kcx "add error handling to the calculator"
+kcx !fix @calc.clj and make sure the edge cases are covered
+kcx "add error handling to the calculator"   # pure natural language
 ```
 
 ### Examples
 
 ```bash
 kcx !fix @calculator.clj                          # "Fix the issue in calculator.clj."
-kcx !review @calc.clj @divide-fn                   # "Review calc.clj, focusing on divide-fn."
-kcx !review                                        # "Review the codebase." (defaults)
-kcx !fix @calc.clj +thorough +skip-tests           # Fix with modifiers
+kcx !edit @calc.clj %"add error handling"          # Fills both template params
+kcx !review @calc.clj +thorough                    # Review with modifier
+kcx !explain @workflow.clj                         # Read-only explanation
+kcx !explain %"test-driven development"            # Explain a concept
+kcx !fix @calc.clj >skip-tests just fix the typo  # Skip tester, inline instruction
+kcx !fix @calc.clj >fast                           # Worker + curator only
 kcx !tdd @utils.clj                                # TDD workflow
-kcx !fix @calc.clj "division by zero crashes"      # DSL + natural language
 ```
 
 ## Prompt Expansion
@@ -118,7 +122,13 @@ Verb and modifier definitions use `{param}` templates with positional arguments:
 ;; !review                       → "Review the codebase, focusing on correctness and code quality."
 ```
 
-Every param has a string default — no magic clause dropping, just straightforward substitution.
+Params with `:default` fall back when not provided. Params without `:default` are required — the expansion engine returns an error if they're missing:
+
+```clojure
+{"debug" {:prompt "Debug the following error: {target}."
+          :params [{:name "target"}]  ;; no :default = required
+          :workflow :standard}}
+```
 
 ### Three-Tier Dictionary
 
@@ -167,6 +177,8 @@ Workflows are defined as data — a map of states and transitions — executed b
 | **Standard** | `!fix`, `!gen`, `!edit`, etc. | work → test → review → curate |
 | **TDD** | `!test`, `!tdd` | write-tests → implement → validate → review → curate |
 | **Architect** | `!plan`, `!design`, `!arch` | architect → work → test → review → curate |
+| **Review** | `!review`, `!check`, `!lint` | work → curate |
+| **Explain** | `!explain`, `!why`, `!how` | explainer → done |
 
 ### Retry Loops
 
@@ -174,6 +186,19 @@ The state machine handles retries automatically:
 - **Tester fails** → routes back to worker with feedback (up to 3 retries)
 - **Reviewer rejects** → routes back to worker with feedback (up to 3 retries)
 - **Retry exhaustion** → workflow fails with accumulated context
+
+### Pipeline Directives
+
+Directives (`>`) modify the workflow graph at runtime by removing stages:
+
+| Directive | Effect | Resulting pipeline |
+|-----------|--------|--------------------|
+| `>skip-tests` | Remove tester | work → review → curate |
+| `>skip-review` | Remove reviewer | work → test → curate |
+| `>fast` | Remove tester + reviewer | work → curate |
+| `>yolo` | Worker only | work → done |
+
+Directives are composable: `>skip-tests >skip-review` = `>fast`.
 
 ### Agents
 
@@ -184,13 +209,14 @@ The state machine handles retries automatically:
 | **Reviewer** | QA | Code review, approval/rejection with feedback |
 | **Curator** | Librarian | Memory bank compaction (Claude-powered, intelligent) |
 | **Architect** | Designer | System design, planning, specifications |
+| **Explainer** | Reader | Read-only exploration and explanation (no file writes) |
 
 ## State Management
 
 KCX uses EDN files as a persistent memory bank. The Curator agent compresses workflow results into structured memory after each run.
 
 ```clojure
-{:meta {:version "0.5.1" :created "2025-01-13T..."}
+{:meta {:version "0.6.0" :created "2025-01-13T..."}
  :stack {:language "Clojure" :framework "Babashka"}
  :active-context {:task "Current task" :status "in-progress"}
  :memory [{:action "fix" :target "calculator.clj" :priority :high}]}
@@ -245,6 +271,19 @@ kcx/
 | `write_file` | Write content to files |
 
 ## Changelog
+
+### v0.6.0 — Pipeline Directives, Explainer Agent, DSL Refinement
+- Pipeline directives (`>skip-tests`, `>fast`, `>yolo`) — rewrite workflow graph at runtime
+- Explainer agent — read-only `!explain`/`!why`/`!how` verbs, no file writes
+- `%` param alias — `@` for files (with autocomplete), `%` for general values
+- Quoted multi-word params: `%"add error handling"`
+- Multiple positional params fill template slots in order
+- Required params (no `:default` = error if missing)
+- Review workflow (`!review` → work + curate only, no tester)
+- Simplified DSL to 5 symbols, inline natural language (no quotes needed)
+- Improved progress indicators with handoff messages and elapsed times
+- Removed `requires-workflow?` gate — all non-controller verbs route through engine
+- 82 tests, 214 assertions
 
 ### v0.5.1 — Prompt Expansion Engine
 - Token expansion system: `!verb` and `+modifier` resolve against layered dictionaries
