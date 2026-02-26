@@ -115,7 +115,7 @@
     (let [cmd {:verb "fix" :target "calc.clj" :modifiers ["thorough"]}
           expanded (#'orchestrator/expand-cmd cmd)]
       (is (:expanded? expanded))
-      (is (= "Fix the issue in calc.clj." (:expanded-verb expanded)))
+      (is (= "Fix the following issue: calc.clj." (:expanded-verb expanded)))
       (is (= :standard (:workflow expanded)))
       (is (= 1 (count (:expanded-modifiers expanded))))
       ;; Original cmd keys preserved

@@ -1,40 +1,42 @@
 {:verbs
- {"fix"    {:prompt "Fix the issue in {target}."
-            :params [{:name "target" :default "the codebase"}]
-            :workflow :standard}
-  "gen"    {:prompt "Generate {target}."
-            :params [{:name "target" :default "the requested code"}]
-            :workflow :standard}
-  "review" {:prompt "Review {target}, focusing on {scope}."
-            :params [{:name "target" :default "the codebase"}
-                     {:name "scope"  :default "correctness and code quality"}]
-            :workflow :review}
-  "test"   {:prompt "Write tests for {target}."
-            :params [{:name "target" :default "the codebase"}]
-            :workflow :tdd}
-  "tdd"    {:prompt "Write tests first for {target}, then implement."
-            :params [{:name "target" :default "the codebase"}]
-            :workflow :tdd}
-  "edit"   {:prompt "Edit {target} to {change}."
-            :params [{:name "target" :default "the codebase"}
-                     {:name "change" :default "make the requested changes"}]
-            :workflow :standard}
-  "debug"  {:prompt "Debug the following error: {target}."
-            :params [{:name "target"}]
-            :workflow :standard}
-  "explain" {:prompt "Explain how {target} works."
-             :params [{:name "target" :default "the codebase"}]
-             :workflow :explain}}
+ {"fix"     {:prompt "Fix the following issue: {target}."
+             :params [{:name "target"}]
+             :workflow :standard}
+  "debug"   {:prompt "Debug the following issue: {target}."
+             :params [{:name "target"}]
+             :workflow :standard}
+  "feature" {:prompt "Build a new feature that does the following: " 
+             :workflow :standard}
+  "review"  {:prompt "Review {target}, focusing on {scope}."
+             :params [{:name "target"}
+                      {:name "scope"  :default "correctness and code quality"}]
+             :workflow :review}
+  "test"    {:prompt "Write tests for {target}."
+             :params [{:name "target"}]
+             :workflow :tdd}
+  "tdd"     {:prompt "Implement {target} using test-driven development."
+             :params [{:name "target"}]
+             :workflow :tdd}
+  "edit"    {:prompt "Edit {target} to {change}."
+             :params [{:name "target"}
+                      {:name "change" :default "make the requested changes"}]
+             :workflow :standard}
+  "explain"  {:prompt "Explain how {target} works."
+              :params [{:name "target"}]
+              :workflow :explain}}
 
  :modifiers
- {"thorough"    {:prompt "Be thorough. Compare against the broader codebase."
+ {"error"       {:prompt "The error message is: {error_message}."
+                 :params [{:name "error_message"}]
+                 :applies-to :all}
+  "thorough"    {:prompt "Be thorough. Compare against the broader codebase."
                  :applies-to :all}
   "min"         {:prompt "Make the smallest change possible."
                  :applies-to :worker}
   "no-hedge"    {:prompt "Be direct and confident. No hedging."
                  :applies-to :reviewer}
   "step-by-step" {:prompt "Explain your reasoning at each step."
-                   :applies-to :all}
+                  :applies-to :all}
   "style"       {:prompt "Follow the patterns in {ref}."
                  :params [{:name "ref" :default "the existing codebase"}]
                  :applies-to :worker}}}

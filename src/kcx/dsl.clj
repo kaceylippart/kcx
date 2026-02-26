@@ -154,21 +154,6 @@
                 (parse-dsl-command remainder))))))))
 
 
-(defn format-command-summary
-  "Format a parsed command for display"
-  [{:keys [verb target modifiers directives instruction] :as cmd}]
-  (when cmd
-    (str "!" (sanitize-component (str verb))
-         (when (and target (not= target "global_context"))
-           (str " @" (sanitize-component (str target))))
-         (when (seq modifiers)
-           (str " " (str/join " " (map #(str "+" (sanitize-component (str %))) modifiers))))
-         (when (seq directives)
-           (str " " (str/join " " (map #(str ">" (sanitize-component (str %))) directives))))
-         (when instruction
-           (str " " instruction)))))
-
-
 (def syntax-help
   "KC-X SYNTAX:
 
@@ -198,8 +183,3 @@ Directives:
   >skip-review  - Skip the review stage
   >fast         - Worker + curator only
   >yolo         - Worker only, no validation")
-
-
-(defn get-syntax-help
-  []
-  syntax-help)

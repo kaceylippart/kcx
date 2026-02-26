@@ -656,24 +656,6 @@
          :error (str e)}))))
 
 
-(defn run-worker
-  "Execute worker agent for a command.
-   Optional reviewer-feedback and iteration for retry loops."
-  [cmd & {:keys [reviewer-feedback iteration] :or {iteration 1}}]
-  (let [prompt (build-worker-prompt cmd :reviewer-feedback reviewer-feedback :iteration iteration)
-        _ (log/log! :info "WORKER START" {:verb (:verb cmd)
-                                          :target (:target cmd)
-                                          :iteration iteration
-                                          :has-feedback (some? reviewer-feedback)})
-        result (spawn-claude prompt :agent-name "WORKER")]
-    (if (:success result)
-      (let [parsed (parse-worker-result (:output result))]
-        (log/log! :info "WORKER DONE" parsed)
-        (assoc parsed :raw-output (:output result) :iteration iteration))
-      {:status "failed"
-       :summary (str "Worker spawn failed: " (:error result))
-       :files-changed []
-       :iteration iteration})))
 
 
 (defn run-reviewer
@@ -690,23 +672,6 @@
        :feedback (str "Reviewer unavailable: " (:error result))})))
 
 
-(defn run-curator
-  "Update memory bank with task result"
-  [cmd worker-result review-result]
-  (try
-    (let [current-state (state/load-state)
-          updated-state (-> current-state
-                            (state/increment-command-count)
-                            (state/add-memory-entry
-                              {:action (:verb cmd)
-                               :target (or (:target cmd) (str/join ", " (:files-changed worker-result)))
-                               :description (:summary worker-result)
-                               :priority (if (= "approve" (:verdict review-result)) :normal :high)}))]
-      (state/save-state! updated-state)
-      (log/log! :info "CURATOR DONE" {:command-count (:command-count updated-state)
-                                      :memory-size (count (:memory updated-state))}))
-    (catch Exception e
-      (log/log-error! "CURATOR FAILED" e))))
 
 
 ;; ============================================================================
@@ -788,42 +753,6 @@
        :files-changed []})))
 
 
-(defn run-tests-command
-  "Run tests and return results. Configurable via KCX_TEST_CMD."
-  [working-dir]
-  (let [test-cmd (or (System/getenv "KCX_TEST_CMD") "bb -m test-runner 2>&1 || true")]
-    (log/log! :info "RUNNING TESTS" {:cmd test-cmd :dir working-dir})
-    (try
-      (let [result (p/shell {:out :string :err :string :dir working-dir}
-                            "sh" "-c" test-cmd)]
-        {:success (zero? (:exit result))
-         :output (:out result)
-         :error (:err result)})
-      (catch Exception e
-        (log/log-error! "TEST COMMAND FAILED" e)
-        {:success false
-         :output ""
-         :error (str e)}))))
-
-
-(defn build-worker-from-tests-prompt
-  "Build a prompt for worker to implement code to pass tests."
-  [{:keys [target modifiers]} test-files test-output]
-  (let [target-str (when (and target (not= target "global_context"))
-                     (str " in " target))]
-    (str
-      "You are WORKER. Implement code" target-str " to make the tests pass.\n"
-      "\nTest files: " (str/join ", " test-files) "\n"
-      "\nTest output (currently failing):\n```\n" (subs test-output 0 (min 1000 (count test-output))) "\n```\n"
-      (when (seq modifiers)
-        (str "FOCUS ON: " (str/join ", " modifiers) ".\n"))
-      "\nPROTOCOL:\n"
-      "1. Read the test files to understand requirements\n"
-      "2. Implement the minimum code to pass tests\n"
-      "3. Follow TDD principles - don't over-engineer\n"
-      "\nWhen done, output EXACTLY:\n"
-      "WORKER_RESULT|STATUS|FILES|SUMMARY\n"
-      "\nBegin.")))
 
 
 ;; ============================================================================
@@ -912,24 +841,6 @@
        :files-changed []})))
 
 
-(defn build-worker-from-spec-prompt
-  "Build a prompt for worker to implement based on architect's spec."
-  [{:keys [target modifiers]} spec-files spec-summary]
-  (let [target-str (when (and target (not= target "global_context"))
-                     (str " in " target))]
-    (str
-      "You are WORKER. Implement the code" target-str " according to the architect's specification.\n"
-      "\nSpecification files: " (str/join ", " spec-files) "\n"
-      "\nSpec summary: " spec-summary "\n"
-      (when (seq modifiers)
-        (str "FOCUS ON: " (str/join ", " modifiers) ".\n"))
-      "\nPROTOCOL:\n"
-      "1. Read the specification files thoroughly\n"
-      "2. Implement code following the spec exactly\n"
-      "3. Create all required files and structures\n"
-      "\nWhen done, output EXACTLY:\n"
-      "WORKER_RESULT|STATUS|FILES|SUMMARY\n"
-      "\nBegin.")))
 
 
 ;; ============================================================================
@@ -1152,38 +1063,55 @@
               {:success false :verdict (:verdict result) :feedback (:feedback result)})))))))
 
 (defn build-curator-prompt
-  "Build a prompt for curator to intelligently update the memory bank."
+  "Build a prompt for curator to update the project briefing document."
   [cmd artifacts current-state]
   (let [worker-result (or (:work artifacts) (:implement artifacts))
         review-result (:review artifacts)
-        memory-str (with-out-str (pprint/pprint current-state))]
+        briefing (:briefing current-state)
+        cmd-count (get-in current-state [:meta :command-count] 0)]
     (str
-      "You are CURATOR, the memory bank manager. Your job is intelligent memory compaction.\n\n"
-      "## CURRENT MEMORY BANK\n```edn\n" memory-str "\n```\n\n"
+      "You are CURATOR. You maintain the project briefing document — the sole context "
+      "that future agents receive about this project.\n\n"
+      "## CURRENT BRIEFING\n\n"
+      (when (:project-map briefing) (str "### Project Map\n" (:project-map briefing) "\n\n"))
+      (when (:conventions briefing) (str "### Conventions\n" (:conventions briefing) "\n\n"))
+      (when (:architecture briefing) (str "### Architecture\n" (:architecture briefing) "\n\n"))
+      (when (:active-context briefing) (str "### Active Context\n" (:active-context briefing) "\n\n"))
+      (when (:known-issues briefing) (str "### Known Issues\n" (:known-issues briefing) "\n\n"))
       "## WHAT JUST HAPPENED\n"
       "Action: " (:verb cmd) (when (:target cmd) (str " @" (:target cmd))) "\n"
+      (when (:instruction cmd) (str "Instruction: " (:instruction cmd) "\n"))
       (when (:summary worker-result) (str "Summary: " (:summary worker-result) "\n"))
       (when (:files-changed worker-result) (str "Files changed: " (str/join ", " (:files-changed worker-result)) "\n"))
       (when (:feedback review-result) (str "Reviewer feedback: " (:feedback review-result) "\n"))
       "\n## YOUR TASK\n"
-      "Update the memory bank state. You must:\n"
-      "1. Increment :command-count\n"
-      "2. Add a new entry to :memory for this task\n"
-      "3. Review existing entries - reprioritize, edit, or remove stale/incorrect ones\n"
-      "4. Prune entries that are no longer relevant\n"
-      "5. Correct any entries that this task's results invalidate\n\n"
-      "Priority levels: :critical (architecture, never expires), :high (100 cmd TTL), :normal (30 cmd TTL), :low (10 cmd TTL)\n\n"
-      "## OUTPUT\n"
-      "Output ONLY the updated EDN state. No explanation, no markdown fences.\n"
-      "The output must be valid EDN matching the structure above.\n"
+      "Update the project briefing. Output valid EDN with this exact structure:\n\n"
+      "{:meta {:version \"2.0\" :project \"" (get-in current-state [:meta :project] "unknown") "\""
+      " :command-count " (inc cmd-count) " :updated \"YYYY-MM-DD\"}\n"
+      " :briefing\n"
+      " {:project-map    \"...\"\n"
+      "  :conventions    \"...\"\n"
+      "  :architecture   \"...\"\n"
+      "  :active-context \"...\"\n"
+      "  :known-issues   \"...\"}}\n\n"
+      "Guidelines:\n"
+      "- **project-map**: What files exist, what they do, how they connect. Update if files were added/removed/renamed.\n"
+      "- **conventions**: Naming patterns, test structure, coding style. Update if new patterns emerged.\n"
+      "- **architecture**: Key design decisions and their rationale. Update if architectural changes were made.\n"
+      "- **active-context**: What was just done, what's in progress, recent changes. ALWAYS update this section.\n"
+      "- **known-issues**: Bugs, tech debt, gotchas. Add new issues, remove resolved ones.\n"
+      "- Keep each section concise but comprehensive. A new agent reading only this briefing should understand the project.\n"
+      "- If a section says \"Not yet populated\", populate it now based on what you can infer from the task and files.\n"
+      "- Use the tools available to you (Read, Glob, Grep) to explore the project if sections are sparse.\n\n"
+      "Output ONLY the EDN. No explanation, no markdown fences.\n"
       "Begin.")))
 
 (defn handle-curator
-  "Curator handler — spawns Claude to intelligently update the memory bank.
-   Claude reviews the full memory state and makes judgment calls about
-   what to add, edit, reprioritize, or prune."
+  "Curator handler — spawns Claude to intelligently update the project briefing.
+   Claude reads the current briefing, understands what just happened, and
+   produces an updated briefing document."
   [cmd artifacts]
-  (status! "→ Handing off to CURATOR (compacting memory)...")
+  (status! "→ Handing off to CURATOR (updating briefing)...")
   (when *current-job*
     (update-job-phase! *current-job* :curator {:agent :curator}))
   (let [start-ms (System/currentTimeMillis)]
@@ -1191,7 +1119,6 @@
       (let [current-state (state/load-state)
             prompt (build-curator-prompt cmd artifacts current-state)
             result (spawn-claude prompt
-                                :timeout-ms 120000
                                 :timeout-ms 120000
                                 :agent-name "CURATOR")
             elapsed (format-elapsed start-ms)]
@@ -1204,39 +1131,21 @@
             (if (and new-state (state/validate-state new-state))
               (do
                 (state/save-state! new-state)
-                (log/log! :info "CURATOR DONE (intelligent)" {:command-count (:command-count new-state)
-                                                               :memory-size (count (:memory new-state))})
-                (status! "  ✓ CURATOR updated memory in" elapsed
-                         (str "(" (count (:memory new-state)) " entries)"))
+                (log/log! :info "CURATOR DONE" {:command-count (get-in new-state [:meta :command-count])})
+                (status! "  ✓ CURATOR updated briefing in" elapsed)
                 {:success true :updated true :intelligent true})
-              ;; Fallback to mechanical update
-              (let [worker-result (or (:work artifacts) (:implement artifacts))
-                    review-result (:review artifacts)
-                    updated (-> current-state
-                                (state/increment-command-count)
-                                (state/add-memory-entry
-                                  {:action (:verb cmd)
-                                   :target (or (:target cmd) (str/join ", " (:files-changed worker-result)))
-                                   :description (:summary worker-result)
-                                   :priority (if (= "approve" (:verdict review-result)) :normal :high)}))]
-                (state/save-state! updated)
-                (log/log! :info "CURATOR DONE (fallback)" {:command-count (:command-count updated)
-                                                            :memory-size (count (:memory updated))})
-                (status! "  ✓ CURATOR updated memory in" elapsed "(fallback)")
-                {:success true :updated true :intelligent false})))
-          ;; Spawn failed - use mechanical fallback
-          (let [worker-result (or (:work artifacts) (:implement artifacts))
-                review-result (:review artifacts)
-                updated (-> (state/load-state)
-                            (state/increment-command-count)
-                            (state/add-memory-entry
-                              {:action (:verb cmd)
-                               :target (or (:target cmd) (str/join ", " (:files-changed worker-result)))
-                               :description (:summary worker-result)
-                               :priority (if (= "approve" (:verdict review-result)) :normal :high)}))]
-            (state/save-state! updated)
+              ;; Fallback: just bump command-count, leave briefing unchanged
+              (do
+                (log/log! :warn "CURATOR OUTPUT INVALID" {:output (subs output 0 (min 200 (count output)))})
+                (let [bumped (update-in current-state [:meta :command-count] (fnil inc 0))]
+                  (state/save-state! bumped)
+                  (status! "  ✓ CURATOR updated briefing in" elapsed "(fallback)")
+                  {:success true :updated true :intelligent false}))))
+          ;; Spawn failed — just bump command-count
+          (let [bumped (update-in current-state [:meta :command-count] (fnil inc 0))]
+            (state/save-state! bumped)
             (log/log! :info "CURATOR DONE (spawn-failed fallback)" {})
-            (status! "  ✓ CURATOR updated memory in" elapsed "(fallback)")
+            (status! "  ✓ CURATOR updated briefing in" elapsed "(fallback)")
             {:success true :updated true :intelligent false})))
       (catch Exception e
         (log/log-error! "CURATOR FAILED" e)

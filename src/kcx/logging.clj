@@ -93,20 +93,6 @@
           {:exception (str exception)})))
 
 
-(defn log-state-change!
-  "Log state changes"
-  [description old-state new-state]
-  (log! :info (str "STATE CHANGE: " description)
-        {:before (when old-state (pr-str old-state))
-         :after (when new-state (pr-str new-state))}))
-
-
-(defn log-agent-routing!
-  "Log agent routing decisions"
-  [command agent-type]
-  (log! :info "AGENT ROUTING"
-        {:command command
-         :routed-to agent-type}))
 
 
 (defn end-session!

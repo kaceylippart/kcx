@@ -6,6 +6,7 @@
    Handlers (kcx.worker) control capability."
   (:require
     [clojure.string :as str]
+    [kcx.dsl :as dsl]
     [kcx.expand :as expand]
     [kcx.logging :as log]
     [kcx.state :as state]
@@ -65,6 +66,7 @@
   [cmd]
   (try
     (case (:verb cmd)
+      "help" dsl/syntax-help
       "proj" (state/switch-project (:target cmd))
       "list" (state/list-projects)
       "status" (str "→ status\n" (state/list-projects))
@@ -247,7 +249,7 @@
       (let [verb (:verb cmd)]
         (case verb
           ;; Controller commands — no workflow needed
-          ("proj" "list" "status" "jobs") (handle-controller cmd)
+          ("help" "proj" "list" "status" "jobs") (handle-controller cmd)
 
           ;; Redo — merge with last command and re-run
           "redo" (execute-redo cmd)
