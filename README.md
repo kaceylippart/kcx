@@ -228,9 +228,9 @@ kcx/
 │   ├── logging.clj      # Session logging
 │   └── utils.clj        # Utilities
 ├── test/kcx/
-│   ├── workflow_test.clj     # State machine tests (14 tests)
-│   ├── orchestrator_test.clj # Orchestrator tests (6 tests)
-│   └── expand_test.clj       # Expansion engine tests (29 tests)
+│   ├── workflow_test.clj     # State machine tests
+│   ├── orchestrator_test.clj # Orchestrator tests
+│   └── expand_test.clj       # Expansion engine tests
 ├── playground/          # Test environment
 ├── logs/                # Session logs
 └── memory-bank/         # Project state files
