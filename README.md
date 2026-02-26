@@ -84,13 +84,16 @@ kcx "add error handling to the calculator"   # pure natural language
 ### Examples
 
 ```bash
-kcx !fix @calculator.clj                          # "Fix the issue in calculator.clj."
+kcx !fix @calculator.clj                          # "Fix the following issue: calculator.clj."
 kcx !edit @calc.clj %"add error handling"          # Fills both template params
 kcx !review @calc.clj +thorough                    # Review with modifier
+kcx !design @auth-system                           # Architect → Worker → Tester → Reviewer
+kcx !build a new REST endpoint for users            # Natural language after verb
 kcx !explain @workflow.clj                         # Read-only explanation
-kcx !explain %"test-driven development"            # Explain a concept
 kcx !fix @calc.clj >skip-tests just fix the typo  # Skip tester, inline instruction
 kcx !fix @calc.clj >fast                           # Worker + curator only
+kcx !review @calc.clj +thorough >preview           # Show expanded prompt without running
+kcx !help @review                                  # Show params and template for !review
 kcx !tdd @utils.clj                                # TDD workflow
 ```
 
@@ -174,11 +177,11 @@ Workflows are defined as data — a map of states and transitions — executed b
 
 | Type | Trigger | Pipeline |
 |------|---------|----------|
-| **Standard** | `!fix`, `!gen`, `!edit`, etc. | work → test → review → curate |
+| **Standard** | `!fix`, `!edit`, `!debug`, `!build` | work → test → review → curate |
 | **TDD** | `!test`, `!tdd` | write-tests → implement → validate → review → curate |
-| **Architect** | `!plan`, `!design`, `!arch` | architect → work → test → review → curate |
-| **Review** | `!review`, `!check`, `!lint` | work → curate |
-| **Explain** | `!explain`, `!why`, `!how` | explainer → done |
+| **Architect** | `!plan`, `!design` | architect → work → test → review → curate |
+| **Review** | `!review` | review → done |
+| **Explain** | `!explain` | explainer → done |
 
 ### Retry Loops
 
@@ -197,6 +200,7 @@ Directives (`>`) modify the workflow graph at runtime by removing stages:
 | `>skip-review` | Remove reviewer | work → test → curate |
 | `>fast` | Remove tester + reviewer | work → curate |
 | `>yolo` | Worker only | work → done |
+| `>preview` | Show expanded prompt | no execution |
 
 Directives are composable: `>skip-tests >skip-review` = `>fast`.
 
@@ -213,14 +217,19 @@ Directives are composable: `>skip-tests >skip-review` = `>fast`.
 
 ## State Management
 
-KCX uses EDN files as a persistent memory bank. The Curator agent compresses workflow results into structured memory after each run.
+KCX uses a persistent **briefing document** as its memory bank. Each project gets a structured EDN file with five sections that the Curator agent maintains intelligently after each workflow run.
 
 ```clojure
-{:meta {:version "0.6.0" :created "2025-01-13T..."}
- :stack {:language "Clojure" :framework "Babashka"}
- :active-context {:task "Current task" :status "in-progress"}
- :memory [{:action "fix" :target "calculator.clj" :priority :high}]}
+{:meta {:version "2.0" :project "my-app" :command-count 15 :updated "2026-02-26"}
+ :briefing
+ {:project-map    "What files exist, what they do, how they connect..."
+  :conventions    "Naming patterns, test structure, coding style..."
+  :architecture   "Key design decisions and their rationale..."
+  :active-context "Last task, recent changes, current focus..."
+  :known-issues   "Bugs, tech debt, gotchas..."}}
 ```
+
+This briefing is the **sole context** each sub-agent receives about the project. The Curator's job is to keep it comprehensive — a new agent reading only this document should understand the project well enough to work on it.
 
 ## Configuration
 
@@ -244,22 +253,21 @@ kcx/
 │   └── base-expansions.edn  # Base expansion dictionary
 ├── src/kcx/
 │   ├── core.clj         # MCP server & request handling
-│   ├── dsl.clj          # DSL parser
+│   ├── dsl.clj          # DSL parser & syntax help
 │   ├── expand.clj       # Prompt expansion engine
 │   ├── workflow.clj     # State machine definitions & executor
 │   ├── orchestrator.clj # Command dispatch & result formatting
 │   ├── worker.clj       # Agent spawning, prompts, handlers
-│   ├── agents.clj       # Agent type definitions
-│   ├── state.clj        # Memory bank (EDN)
+│   ├── state.clj        # Memory bank (v2 briefing format)
 │   ├── logging.clj      # Session logging
-│   └── utils.clj        # Utilities
+│   └── utils.clj        # IO aliases
 ├── test/kcx/
 │   ├── workflow_test.clj     # State machine tests
 │   ├── orchestrator_test.clj # Orchestrator tests
-│   └── expand_test.clj       # Expansion engine tests
+│   ├── expand_test.clj       # Expansion engine tests
+│   └── state_test.clj        # Memory bank tests
 ├── playground/          # Test environment
-├── logs/                # Session logs
-└── memory-bank/         # Project state files
+└── logs/                # Session logs
 ```
 
 ## MCP Tools
@@ -267,22 +275,34 @@ kcx/
 | Tool | Description |
 |------|-------------|
 | `kcx_command` | Execute DSL commands or natural language prompts |
-| `read_state` | Read project memory bank |
-| `write_file` | Write content to files |
 
 ## Changelog
 
+### v0.7.0 — Memory Bank v2, Verb Routing, Help & Preview
+- Memory bank redesigned as structured briefing document (5 sections of curator-maintained prose)
+- Removed mechanical TTL/priority system — curator manages context intelligently
+- Auto-migration from v1 (flat entries) to v2 (briefing) on load
+- Single source of truth for verb routing — expansion dictionary only, no hardcoded fallback
+- Unknown verbs return error with `!help` hint
+- `!help` command — lists all verbs; `!help <verb>` shows template, params, defaults
+- `>preview` directive — shows expanded prompt without running workflow
+- `!plan` and `!design` verbs wired to architect workflow
+- `!build` verb for new features (no params, pure natural language)
+- Dead code sweep: removed agents.clj, claude_api.clj, stale test files (-1,700 lines)
+- 89 tests, 242 assertions
+
 ### v0.6.0 — Pipeline Directives, Explainer Agent, DSL Refinement
 - Pipeline directives (`>skip-tests`, `>fast`, `>yolo`) — rewrite workflow graph at runtime
-- Explainer agent — read-only `!explain`/`!why`/`!how` verbs, no file writes
+- Explainer agent — read-only `!explain` verb, no file writes
 - `%` param alias — `@` for files (with autocomplete), `%` for general values
 - Quoted multi-word params: `%"add error handling"`
 - Multiple positional params fill template slots in order
 - Required params (no `:default` = error if missing)
-- Review workflow (`!review` → work + curate only, no tester)
+- Review workflow (`!review` → reviewer only, no worker overhead)
 - Simplified DSL to 5 symbols, inline natural language (no quotes needed)
-- Improved progress indicators with handoff messages and elapsed times
-- Removed `requires-workflow?` gate — all non-controller verbs route through engine
+- All agents get full tool access — constrain sequence, not capability
+- Three-tier expansion loading with hot-reload (no restart needed)
+- Single MCP tool: `kcx_command`
 - 82 tests, 214 assertions
 
 ### v0.5.1 — Prompt Expansion Engine
