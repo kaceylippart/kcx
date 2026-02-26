@@ -30,6 +30,9 @@ KCX is a multi-agent MCP server that orchestrates AI workflows through a data-dr
 git clone <repo-url>
 cd kcx
 chmod +x kcx.clj
+
+# Install the /kcx slash command
+cp commands/kcx.md ~/.claude/commands/kcx.md
 ```
 
 ### Claude Code Configuration
