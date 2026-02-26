@@ -78,16 +78,6 @@
     :curate    {:handler :curator   :next :done}}})
 
 
-(defn verb->workflow
-  "Map a DSL verb to its workflow definition."
-  [verb]
-  (case verb
-    ("test" "tdd")                        tdd-workflow
-    ("plan" "arch" "design" "analyze")    architect-workflow
-    ("review" "check" "lint")             review-workflow
-    ("explain" "why" "how")              explain-workflow
-    standard-workflow))
-
 (defn get-workflow
   "Get a workflow definition by keyword type (:standard, :tdd, :architect)."
   [workflow-type]

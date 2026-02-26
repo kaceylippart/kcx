@@ -1,29 +1,44 @@
 {:verbs
- {"fix"     {:prompt "Fix the following issue: {target}."
+ {;; Standard workflow — WORKER → TESTER → REVIEWER → CURATOR
+  "fix"     {:prompt "Fix the following issue: {target}."
              :params [{:name "target"}]
              :workflow :standard}
   "debug"   {:prompt "Debug the following issue: {target}."
              :params [{:name "target"}]
              :workflow :standard}
-  "feature" {:prompt "Build a new feature that does the following: " 
-             :workflow :standard}
-  "review"  {:prompt "Review {target}, focusing on {scope}."
+  "edit"    {:prompt "Edit {target} to {change}."
              :params [{:name "target"}
-                      {:name "scope"  :default "correctness and code quality"}]
-             :workflow :review}
+                      {:name "change" :default "make the requested changes"}]
+             :workflow :standard}
+  "build"   {:prompt "Build a new feature:"
+             :workflow :standard}
+
+  ;; Architect workflow — ARCHITECT → WORKER → TESTER → REVIEWER → CURATOR
+  "plan"    {:prompt "Create an implementation plan for {target}."
+             :params [{:name "target"}]
+             :workflow :architect}
+  "design"  {:prompt "Design the architecture for {target}."
+             :params [{:name "target"}]
+             :workflow :architect}
+
+  ;; TDD workflow — TESTER → WORKER → TESTER → REVIEWER → CURATOR
   "test"    {:prompt "Write tests for {target}."
              :params [{:name "target"}]
              :workflow :tdd}
   "tdd"     {:prompt "Implement {target} using test-driven development."
              :params [{:name "target"}]
              :workflow :tdd}
-  "edit"    {:prompt "Edit {target} to {change}."
+
+  ;; Review workflow — REVIEWER → DONE
+  "review"  {:prompt "Review {target}, focusing on {scope}."
              :params [{:name "target"}
-                      {:name "change" :default "make the requested changes"}]
-             :workflow :standard}
-  "explain"  {:prompt "Explain how {target} works."
-              :params [{:name "target"}]
-              :workflow :explain}}
+                      {:name "scope"  :default "correctness and code quality"}]
+             :workflow :review}
+
+  ;; Explain workflow — EXPLAINER → DONE
+  "explain" {:prompt "Explain how {target} works."
+             :params [{:name "target"}]
+             :workflow :explain}}
 
  :modifiers
  {"error"       {:prompt "The error message is: {error_message}."

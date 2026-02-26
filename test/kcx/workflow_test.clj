@@ -204,23 +204,15 @@
 ;; Verb → Workflow Mapping
 ;; ============================================================================
 
-(deftest test-verb->workflow
-  (testing "Verbs map to correct workflows"
-    (is (= :standard (:id (wf/verb->workflow "fix"))))
-    (is (= :standard (:id (wf/verb->workflow "gen"))))
-    (is (= :standard (:id (wf/verb->workflow "edit"))))
-    (is (= :standard (:id (wf/verb->workflow "debug"))))
-    (is (= :tdd (:id (wf/verb->workflow "test"))))
-    (is (= :tdd (:id (wf/verb->workflow "tdd"))))
-    (is (= :architect (:id (wf/verb->workflow "plan"))))
-    (is (= :architect (:id (wf/verb->workflow "arch"))))
-    (is (= :architect (:id (wf/verb->workflow "design"))))
-    (is (= :architect (:id (wf/verb->workflow "analyze"))))
-    (is (= :explain (:id (wf/verb->workflow "explain"))))
-    (is (= :explain (:id (wf/verb->workflow "why"))))
-    (is (= :explain (:id (wf/verb->workflow "how"))))
-    ;; Unknown verbs default to standard
-    (is (= :standard (:id (wf/verb->workflow "build"))))))
+(deftest test-get-workflow
+  (testing "Workflow types resolve to correct definitions"
+    (is (= :standard (:id (wf/get-workflow :standard))))
+    (is (= :tdd (:id (wf/get-workflow :tdd))))
+    (is (= :architect (:id (wf/get-workflow :architect))))
+    (is (= :review (:id (wf/get-workflow :review))))
+    (is (= :explain (:id (wf/get-workflow :explain))))
+    ;; Unknown types fall back to standard
+    (is (= :standard (:id (wf/get-workflow :nonexistent))))))
 
 
 ;; ============================================================================

@@ -62,11 +62,44 @@
 ;; Controller Commands (non-workflow)
 ;; ============================================================================
 
+(defn- format-verb-help
+  "Format help for a specific verb from the expansion dictionary."
+  [verb-name expansions]
+  (let [verb-def (get-in expansions [:verbs verb-name])]
+    (if verb-def
+      (let [params (or (:params verb-def) [])
+            param-strs (map (fn [p]
+                              (let [name (:name p)]
+                                (if-let [default (:default p)]
+                                  (str "  @" name " (default: \"" default "\")")
+                                  (str "  @" name))))
+                            params)]
+        (str "!" verb-name "\n"
+             "  Expands to: " (:prompt verb-def) "\n"
+             "  Workflow:   " (name (:workflow verb-def)) "\n"
+             (when (seq params)
+               (str "  Params:\n" (str/join "\n" param-strs) "\n"))))
+      (str "Unknown verb: !" verb-name ". Use !help for available commands."))))
+
+(defn- format-all-verbs-help
+  "List all available verbs with their prompts."
+  [expansions]
+  (let [verbs (sort-by key (get expansions :verbs {}))
+        lines (map (fn [[name def]]
+                     (str "  !" name " → " (:prompt def)))
+                   verbs)]
+    (str dsl/syntax-help "\n\nAvailable verbs:\n" (str/join "\n" lines)
+         "\n\nUse !help <verb> for details on a specific command.")))
+
 (defn handle-controller
   [cmd]
   (try
     (case (:verb cmd)
-      "help" dsl/syntax-help
+      "help" (let [expansions (load-expansions)
+                   target (:target cmd)]
+               (if (and target (not= target "global_context"))
+                 (format-verb-help target expansions)
+                 (format-all-verbs-help expansions)))
       "proj" (state/switch-project (:target cmd))
       "list" (state/list-projects)
       "status" (str "→ status\n" (state/list-projects))
@@ -165,14 +198,31 @@
   (when-not (:is-redo cmd)
     (worker/set-last-command! cmd))
   ;; Expand tokens against dictionary
-  (let [cmd      (expand-cmd cmd)
-        _        (when (seq (:warnings cmd))
-                   (doseq [w (:warnings cmd)]
-                     (log/log! :warn "EXPANSION WARNING" {:warning w})))
-        ;; Use workflow from expansion if available, fall back to verb->workflow
-        base-wf  (if-let [wf-type (:workflow cmd)]
+  (let [cmd (expand-cmd cmd)
+        _   (when (seq (:warnings cmd))
+              (doseq [w (:warnings cmd)]
+                (log/log! :warn "EXPANSION WARNING" {:warning w})))]
+    ;; >preview — show expanded prompt and return without running workflow
+    (if (some #{"preview"} (:directives cmd))
+      (let [verb-text (or (:expanded-verb cmd) (str "!" (:verb cmd) " (not expanded)"))
+            modifiers (:expanded-modifiers cmd)
+            instruction (:instruction cmd)
+            warnings (:warnings cmd)]
+        (str (when (seq warnings)
+               (str (str/join "\n" (map #(str "⚠ " %) warnings)) "\n\n"))
+             verb-text
+             (when (seq modifiers)
+               (str "\n\nModifiers:\n"
+                    (str/join "\n" (map #(str "  + " (:prompt %)) modifiers))))
+             (when instruction
+               (str "\n\nInstruction: " instruction))))
+      ;; Normal execution
+      (let [;; Workflow must come from expansion dictionary
+            base-wf  (if-let [wf-type (:workflow cmd)]
                    (workflow/get-workflow wf-type)
-                   (workflow/verb->workflow (:verb cmd)))
+                   (throw (ex-info (str "Unknown verb: !" (:verb cmd)
+                                        ". Use !help for available commands.")
+                                   {:verb (:verb cmd)})))
         ;; Apply pipeline directives (>skip-tests, >fast, etc.)
         {:keys [workflow directive-warnings]}
         (let [{:keys [workflow warnings]} (workflow/apply-directives base-wf (or (:directives cmd) []))]
@@ -205,7 +255,7 @@
                 result))))]
     (str (worker/format-status-lines lines)
          "\n\n"
-         (format-workflow-result result cmd))))
+         (format-workflow-result result cmd))))))
 
 
 ;; ============================================================================

@@ -22,12 +22,9 @@
       (is (clojure.string/starts-with? result "ERROR:")))))
 
 (deftest test-unknown-verb
-  (testing "Unknown verb still routes through expansion (warns, uses standard workflow)"
-    (let [cmd {:verb "unknown_verb" :target "test.clj" :modifiers []}
-          expanded (#'orchestrator/expand-cmd cmd)]
-      ;; Unknown verb produces warnings, not expanded
-      (is (not (:expanded? expanded)))
-      (is (seq (:warnings expanded))))))
+  (testing "Unknown verb returns error"
+    (let [result (orchestrator/execute-command {:verb "unknown_verb" :target "test.clj" :modifiers []})]
+      (is (clojure.string/includes? result "Unknown verb")))))
 
 
 ;; ============================================================================
