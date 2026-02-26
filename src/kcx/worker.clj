@@ -1110,7 +1110,7 @@
         (let [start-ms (System/currentTimeMillis)
               prompt (build-standalone-reviewer-prompt cmd)
               spawn-result (spawn-claude prompt
-                                        :tools "Read,Glob,Grep"
+                                        :tools "Read,Glob,Grep,Bash"
                                         :timeout-ms 300000
                                         :agent-name "REVIEWER")
               elapsed (format-elapsed start-ms)]
