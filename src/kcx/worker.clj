@@ -606,7 +606,7 @@
               ;; Time for heartbeat
               (>= elapsed-since-heartbeat heartbeat-interval-ms)
               (do
-                (detail! "  ⋯" agent-name "working..." (str "[" (format-elapsed spawn-start) "]"))
+                (status! "  ⋯" agent-name "working..." (str "[" (format-elapsed spawn-start) "]"))
                 (Thread/sleep 1000)
                 (recur now))
 
@@ -991,23 +991,32 @@
         prompt (if (:prompt cmd)
                  (build-natural-prompt cmd :reviewer-feedback feedback)
                  (build-worker-prompt cmd :reviewer-feedback feedback))]
-    (status! "→ WORKER")
+    (status! "→ Handing off to WORKER...")
     (when *current-job*
       (update-job-phase! *current-job* :worker {:agent :worker}))
-    (let [spawn-result (spawn-claude prompt :agent-name "WORKER")]
+    (let [start-ms (System/currentTimeMillis)
+          spawn-result (spawn-claude prompt :agent-name "WORKER")
+          elapsed (format-elapsed start-ms)]
       (if (:success spawn-result)
-        (let [parsed (parse-worker-result (:output spawn-result))]
+        (let [parsed (parse-worker-result (:output spawn-result))
+              n-files (count (:files-changed parsed))]
           (log/log! :info "WORKER DONE" parsed)
-          (status! "  WORKER edited" (format-files-changed (:files-changed parsed)))
-          (detail! (:summary parsed))
           (if (= "failed" (:status parsed))
-            {:success false :files-changed [] :summary (:summary parsed)}
-            {:success true
-             :files-changed (:files-changed parsed)
-             :summary (:summary parsed)
-             :raw-output (:output spawn-result)}))
+            (do
+              (status! "  ✗ WORKER failed after" elapsed)
+              (status! "    " (:summary parsed))
+              {:success false :files-changed [] :summary (:summary parsed)})
+            (do
+              (if (zero? n-files)
+                (status! "  ✓ WORKER completed in" elapsed "— no files changed")
+                (status! "  ✓ WORKER completed in" elapsed "— edited" (format-files-changed (:files-changed parsed))))
+              (status! "    " (:summary parsed))
+              {:success true
+               :files-changed (:files-changed parsed)
+               :summary (:summary parsed)
+               :raw-output (:output spawn-result)})))
         (do
-          (status! "✗ WORKER failed")
+          (status! "  ✗ WORKER failed to spawn after" elapsed)
           {:success false
            :summary (str "Worker spawn failed: " (:error spawn-result))
            :files-changed []})))))
@@ -1019,35 +1028,38 @@
   [cmd artifacts]
   (let [;; Determine if this is a write-tests or validation phase
         worker-result (or (:work artifacts) (:implement artifacts))]
-    (status! "→ TESTER" (if worker-result "validating..." "writing tests..."))
+    (status! "→ Handing off to TESTER" (if worker-result "(validating changes)..." "(writing tests)..."))
     (when *current-job*
       (update-job-phase! *current-job* :tester {:agent :tester}))
-    (if worker-result
-      ;; Validation mode: check worker's changes
-      (let [result (run-tester-validation worker-result cmd)]
-        (if (= "pass" (:verdict result))
-          (do
-            (status! "  TESTER passed")
-            (detail! (:feedback result))
-            {:success true :verdict "pass" :feedback (:feedback result)})
-          (do
-            (status! "  TESTER failed")
-            (detail! (:feedback result))
-            {:success false :verdict "fail" :feedback (:feedback result)})))
-      ;; Write-tests mode: create tests from scratch
-      (let [result (run-tester cmd)]
-        (if (= "failed" (:status result))
-          (do
-            (status! "✗ TESTER failed")
-            (detail! (:summary result))
-            {:success false :summary (:summary result) :files-changed []})
-          (do
-            (status! "  TESTER wrote" (format-files-changed (:files-changed result)))
-            (detail! (:summary result))
-            {:success true
-             :files-changed (:files-changed result)
-             :summary (:summary result)
-             :raw-output (:raw-output result)}))))))
+    (let [start-ms (System/currentTimeMillis)]
+      (if worker-result
+        ;; Validation mode: check worker's changes
+        (let [result (run-tester-validation worker-result cmd)
+              elapsed (format-elapsed start-ms)]
+          (if (= "pass" (:verdict result))
+            (do
+              (status! "  ✓ TESTER passed in" elapsed)
+              (status! "    " (:feedback result))
+              {:success true :verdict "pass" :feedback (:feedback result)})
+            (do
+              (status! "  ✗ TESTER failed in" elapsed)
+              (status! "    " (:feedback result))
+              {:success false :verdict "fail" :feedback (:feedback result)})))
+        ;; Write-tests mode: create tests from scratch
+        (let [result (run-tester cmd)
+              elapsed (format-elapsed start-ms)]
+          (if (= "failed" (:status result))
+            (do
+              (status! "  ✗ TESTER failed after" elapsed)
+              (status! "    " (:summary result))
+              {:success false :summary (:summary result) :files-changed []})
+            (do
+              (status! "  ✓ TESTER completed in" elapsed "— wrote" (format-files-changed (:files-changed result)))
+              (status! "    " (:summary result))
+              {:success true
+               :files-changed (:files-changed result)
+               :summary (:summary result)
+               :raw-output (:raw-output result)})))))))
 
 (defn handle-reviewer
   "Reviewer handler — reviews worker's changes, approves or rejects.
@@ -1058,19 +1070,21 @@
         arch-files (get-in artifacts [:architect :files-changed])
         all-files (distinct (concat (or arch-files [])
                                     (or (:files-changed worker-result) [])))]
-    (status! "→ REVIEWER reviewing...")
+    (status! "→ Handing off to REVIEWER..." (str "(" (count all-files) " file" (when (not= 1 (count all-files)) "s") " to review)"))
     (when *current-job*
       (update-job-phase! *current-job* :reviewer {:agent :reviewer}))
-    (let [review-input (assoc worker-result :files-changed all-files)
-          result (run-reviewer review-input)]
+    (let [start-ms (System/currentTimeMillis)
+          review-input (assoc worker-result :files-changed all-files)
+          result (run-reviewer review-input)
+          elapsed (format-elapsed start-ms)]
       (if (= "approve" (:verdict result))
         (do
-          (status! "  REVIEWER approved")
-          (detail! (:feedback result))
+          (status! "  ✓ REVIEWER approved in" elapsed)
+          (status! "    " (:feedback result))
           {:success true :verdict "approve" :feedback (:feedback result)})
         (do
-          (status! "  REVIEWER rejected")
-          (detail! (:feedback result))
+          (status! "  ✗ REVIEWER rejected in" elapsed)
+          (status! "    " (:feedback result))
           {:success false :verdict (:verdict result) :feedback (:feedback result)})))))
 
 (defn build-curator-prompt
@@ -1105,81 +1119,84 @@
    Claude reviews the full memory state and makes judgment calls about
    what to add, edit, reprioritize, or prune."
   [cmd artifacts]
-  (status! "→ CURATOR updating memory...")
+  (status! "→ Handing off to CURATOR (compacting memory)...")
   (when *current-job*
     (update-job-phase! *current-job* :curator {:agent :curator}))
-  (try
-    (let [current-state (state/load-state)
-          prompt (build-curator-prompt cmd artifacts current-state)
-          result (spawn-claude prompt
-                              :timeout-ms 120000
-                              :tools "Read"
-                              :agent-name "CURATOR")]
-      (if (:success result)
-        (let [output (str/trim (:output result))
-              ;; Try to parse the EDN output from curator
-              new-state (try
-                          (edn/read-string output)
-                          (catch Exception _
-                            nil))]
-          (if (and new-state (state/validate-state new-state))
-            (do
-              (state/save-state! new-state)
-              (log/log! :info "CURATOR DONE (intelligent)" {:command-count (:command-count new-state)
-                                                             :memory-size (count (:memory new-state))})
-              (status! "  CURATOR updated memory")
-              {:success true :updated true :intelligent true})
-            ;; Fallback to mechanical update
-            (let [worker-result (or (:work artifacts) (:implement artifacts))
-                  review-result (:review artifacts)
-                  updated (-> current-state
-                              (state/increment-command-count)
-                              (state/add-memory-entry
-                                {:action (:verb cmd)
-                                 :target (or (:target cmd) (str/join ", " (:files-changed worker-result)))
-                                 :description (:summary worker-result)
-                                 :priority (if (= "approve" (:verdict review-result)) :normal :high)}))]
-              (state/save-state! updated)
-              (log/log! :info "CURATOR DONE (fallback)" {:command-count (:command-count updated)
-                                                          :memory-size (count (:memory updated))})
-              (status! "  CURATOR updated memory")
-              {:success true :updated true :intelligent false})))
-        ;; Spawn failed - use mechanical fallback
-        (let [worker-result (or (:work artifacts) (:implement artifacts))
-              review-result (:review artifacts)
-              updated (-> (state/load-state)
-                          (state/increment-command-count)
-                          (state/add-memory-entry
-                            {:action (:verb cmd)
-                             :target (or (:target cmd) (str/join ", " (:files-changed worker-result)))
-                             :description (:summary worker-result)
-                             :priority (if (= "approve" (:verdict review-result)) :normal :high)}))]
-          (state/save-state! updated)
-          (log/log! :info "CURATOR DONE (spawn-failed fallback)" {})
-          (status! "  CURATOR updated memory (fallback)")
-          {:success true :updated true :intelligent false})))
-    (catch Exception e
-      (log/log-error! "CURATOR FAILED" e)
-      (status! "✗ CURATOR failed")
-      ;; Curator failure shouldn't fail the whole workflow
-      {:success true :updated false :error (str e)})))
+  (let [start-ms (System/currentTimeMillis)]
+    (try
+      (let [current-state (state/load-state)
+            prompt (build-curator-prompt cmd artifacts current-state)
+            result (spawn-claude prompt
+                                :timeout-ms 120000
+                                :tools "Read"
+                                :agent-name "CURATOR")
+            elapsed (format-elapsed start-ms)]
+        (if (:success result)
+          (let [output (str/trim (:output result))
+                new-state (try
+                            (edn/read-string output)
+                            (catch Exception _
+                              nil))]
+            (if (and new-state (state/validate-state new-state))
+              (do
+                (state/save-state! new-state)
+                (log/log! :info "CURATOR DONE (intelligent)" {:command-count (:command-count new-state)
+                                                               :memory-size (count (:memory new-state))})
+                (status! "  ✓ CURATOR updated memory in" elapsed
+                         (str "(" (count (:memory new-state)) " entries)"))
+                {:success true :updated true :intelligent true})
+              ;; Fallback to mechanical update
+              (let [worker-result (or (:work artifacts) (:implement artifacts))
+                    review-result (:review artifacts)
+                    updated (-> current-state
+                                (state/increment-command-count)
+                                (state/add-memory-entry
+                                  {:action (:verb cmd)
+                                   :target (or (:target cmd) (str/join ", " (:files-changed worker-result)))
+                                   :description (:summary worker-result)
+                                   :priority (if (= "approve" (:verdict review-result)) :normal :high)}))]
+                (state/save-state! updated)
+                (log/log! :info "CURATOR DONE (fallback)" {:command-count (:command-count updated)
+                                                            :memory-size (count (:memory updated))})
+                (status! "  ✓ CURATOR updated memory in" elapsed "(fallback)")
+                {:success true :updated true :intelligent false})))
+          ;; Spawn failed - use mechanical fallback
+          (let [worker-result (or (:work artifacts) (:implement artifacts))
+                review-result (:review artifacts)
+                updated (-> (state/load-state)
+                            (state/increment-command-count)
+                            (state/add-memory-entry
+                              {:action (:verb cmd)
+                               :target (or (:target cmd) (str/join ", " (:files-changed worker-result)))
+                               :description (:summary worker-result)
+                               :priority (if (= "approve" (:verdict review-result)) :normal :high)}))]
+            (state/save-state! updated)
+            (log/log! :info "CURATOR DONE (spawn-failed fallback)" {})
+            (status! "  ✓ CURATOR updated memory in" elapsed "(fallback)")
+            {:success true :updated true :intelligent false})))
+      (catch Exception e
+        (log/log-error! "CURATOR FAILED" e)
+        (status! "  ✗ CURATOR failed after" (format-elapsed start-ms))
+        {:success true :updated false :error (str e)}))))
 
 (defn handle-architect
   "Architect handler — creates specifications and plans.
    Returns specs that the worker will implement."
   [cmd artifacts]
-  (status! "→ ARCHITECT creating specifications...")
+  (status! "→ Handing off to ARCHITECT (creating specifications)...")
   (when *current-job*
     (update-job-phase! *current-job* :architect {:agent :architect}))
-  (let [result (run-architect cmd)]
+  (let [start-ms (System/currentTimeMillis)
+        result (run-architect cmd)
+        elapsed (format-elapsed start-ms)]
     (if (= "failed" (:status result))
       (do
-        (status! "✗ ARCHITECT failed")
-        (detail! (:summary result))
+        (status! "  ✗ ARCHITECT failed after" elapsed)
+        (status! "    " (:summary result))
         {:success false :summary (:summary result) :files-changed []})
       (do
-        (status! "  ARCHITECT wrote" (format-files-changed (:files-changed result)))
-        (detail! (:summary result))
+        (status! "  ✓ ARCHITECT completed in" elapsed "— wrote" (format-files-changed (:files-changed result)))
+        (status! "    " (:summary result))
         {:success true
          :files-changed (:files-changed result)
          :summary (:summary result)
