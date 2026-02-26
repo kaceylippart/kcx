@@ -58,10 +58,10 @@ bb test
 
 ## DSL
 
-Five symbols, plus inline natural language. Each token is a key into an expansion dictionary — `!review` doesn't mean "review", it expands into a full, curated prompt.
+Five symbols, plus inline natural language. Each token is a key into an expansion dictionary — `!review` doesn't mean "review", it expands into a full, curated prompt. Invoke via the `/kcx` slash command in Claude Code:
 
 ```
-kcx !verb @file %value +modifier >directive and any natural language here
+/kcx !verb @file %value +modifier >directive and any natural language here
 ```
 
 | Symbol | Purpose | Example |
@@ -77,24 +77,24 @@ kcx !verb @file %value +modifier >directive and any natural language here
 Everything that isn't a symbol token is natural language, passed as-is:
 
 ```bash
-kcx !fix @calc.clj and make sure the edge cases are covered
-kcx "add error handling to the calculator"   # pure natural language
+/kcx !fix @calc.clj and make sure the edge cases are covered
+/kcx "add error handling to the calculator"   # pure natural language
 ```
 
 ### Examples
 
 ```bash
-kcx !fix @calculator.clj                          # "Fix the following issue: calculator.clj."
-kcx !edit @calc.clj %"add error handling"          # Fills both template params
-kcx !review @calc.clj +thorough                    # Review with modifier
-kcx !design @auth-system                           # Architect → Worker → Tester → Reviewer
-kcx !build a new REST endpoint for users            # Natural language after verb
-kcx !explain @workflow.clj                         # Read-only explanation
-kcx !fix @calc.clj >skip-tests just fix the typo  # Skip tester, inline instruction
-kcx !fix @calc.clj >fast                           # Worker + curator only
-kcx !review @calc.clj +thorough >preview           # Show expanded prompt without running
-kcx !help @review                                  # Show params and template for !review
-kcx !tdd @utils.clj                                # TDD workflow
+/kcx !fix @calculator.clj                          # "Fix the following issue: calculator.clj."
+/kcx !edit @calc.clj %"add error handling"          # Fills both template params
+/kcx !review @calc.clj +thorough                    # Review with modifier
+/kcx !design @auth-system                           # Architect → Worker → Tester → Reviewer
+/kcx !build a new REST endpoint for users           # Natural language after verb
+/kcx !explain @workflow.clj                         # Read-only explanation
+/kcx !fix @calc.clj >skip-tests just fix the typo  # Skip tester, inline instruction
+/kcx !fix @calc.clj >fast                           # Worker + curator only
+/kcx !review @calc.clj +thorough >preview           # Show expanded prompt without running
+/kcx !help @review                                  # Show params and template for !review
+/kcx !tdd @utils.clj                                # TDD workflow
 ```
 
 ## Prompt Expansion

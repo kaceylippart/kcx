@@ -142,16 +142,19 @@
 
 
 (defn parse-command
-  "Main entry point - requires 'kcx ' prefix.
-   Supports DSL commands (kcx !verb @target) and natural language prompts (kcx \"prompt\")."
+  "Main entry point for DSL parsing.
+   Supports DSL commands (!verb @target) and natural language prompts (\"prompt\").
+   Accepts optional 'kcx ' prefix for backward compatibility."
   [input]
   (when (and input (validate-input input) (not (str/blank? input)))
-    (let [trimmed (str/trim input)]
-      (when (str/starts-with? trimmed "kcx ")
-        (let [remainder (-> trimmed (subs 4) str/trim)]
-          (when (seq remainder)
-            (or (parse-natural-prompt remainder)
-                (parse-dsl-command remainder))))))))
+    (let [trimmed (str/trim input)
+          ;; Strip optional 'kcx ' prefix for backward compatibility
+          remainder (if (str/starts-with? trimmed "kcx ")
+                     (-> trimmed (subs 4) str/trim)
+                     trimmed)]
+      (when (seq remainder)
+        (or (parse-natural-prompt remainder)
+            (parse-dsl-command remainder))))))
 
 
 (def syntax-help
@@ -168,15 +171,15 @@ Symbols (embed inline with natural language):
 Everything else is natural language.
 
 Examples:
-  kcx !fix @calculator.clj and make sure the edge cases are covered
-  kcx !edit @calc.clj %\"add error handling\"
-  kcx !explain %workflows
-  kcx !review @audience-selector.cljs +thorough
-  kcx !fix @calc.clj +thorough >skip-tests
-  kcx !debug @calc.clj and let me know if there's anything else wrong
-  kcx !fix @calc.clj >fast just fix the typo
-  kcx !redo +step-by-step
-  kcx !status
+  /kcx !fix @calculator.clj and make sure the edge cases are covered
+  /kcx !edit @calc.clj %\"add error handling\"
+  /kcx !explain %workflows
+  /kcx !review @audience-selector.cljs +thorough
+  /kcx !fix @calc.clj +thorough >skip-tests
+  /kcx !debug @calc.clj and let me know if there's anything else wrong
+  /kcx !fix @calc.clj >fast just fix the typo
+  /kcx !redo +step-by-step
+  /kcx !status
 
 Directives:
   >skip-tests   - Skip the testing stage

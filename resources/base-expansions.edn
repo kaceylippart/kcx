@@ -12,6 +12,10 @@
              :workflow :standard}
   "build"   {:prompt "Build a new feature:"
              :workflow :standard}
+  "update"  {:prompt "Update {target} to {change}."
+             :params [{:name "target"}
+                      {:name "change"}]
+             :workflow :standard}
 
   ;; Architect workflow — ARCHITECT → WORKER → TESTER → REVIEWER → CURATOR
   "plan"    {:prompt "Create an implementation plan for {target}."

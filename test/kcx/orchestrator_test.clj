@@ -109,7 +109,7 @@
 
 (deftest test-expand-cmd-known-verb
   (testing "Known verb expands successfully"
-    (let [cmd {:verb "fix" :target "calc.clj" :modifiers ["thorough"]}
+    (let [cmd {:verb "fix" :target "calc.clj" :args ["calc.clj"] :modifiers ["thorough"]}
           expanded (#'orchestrator/expand-cmd cmd)]
       (is (:expanded? expanded))
       (is (= "Fix the following issue: calc.clj." (:expanded-verb expanded)))

@@ -70,7 +70,7 @@
                            :description "Execute a KCX command for agent-driven workflows"
                            :inputSchema {:type "object"
                                          :properties {:command {:type "string"
-                                                                :description "KCX command (e.g., 'kcx !fix @file.clj +error-handling')"}}
+                                                                :description "KCX command (e.g., '!fix @file.clj +error-handling')"}}
                                          :required ["command"]}}
 ]}
 
