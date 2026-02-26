@@ -27,8 +27,6 @@
                    :applies-to :reviewer}
     "minimal"     {:prompt "Make the smallest change possible."
                    :applies-to :worker}
-    "skip-tests"  {:prompt "Do not write or modify tests."
-                   :applies-to :worker}
     "style"       {:prompt "Follow the patterns in {ref}."
                    :params [{:name "ref" :default "the existing codebase"}]
                    :applies-to :worker}
@@ -60,7 +58,7 @@
 
 (deftest test-render-template-all-params
   (testing "Template with all params provided"
-    (is (= "Review calc.clj, focusing on divide-fn."
+    (is (= {:ok "Review calc.clj, focusing on divide-fn."}
            (expand/render-template
              "Review {target}, focusing on {scope}."
              [{:name "target" :default "the codebase"}
@@ -69,7 +67,7 @@
 
 (deftest test-render-template-defaults
   (testing "Missing params use string defaults"
-    (is (= "Review the codebase, focusing on correctness and code quality."
+    (is (= {:ok "Review the codebase, focusing on correctness and code quality."}
            (expand/render-template
              "Review {target}, focusing on {scope}."
              [{:name "target" :default "the codebase"}
@@ -78,7 +76,7 @@
 
 (deftest test-render-template-partial-defaults
   (testing "Some args provided, rest use defaults"
-    (is (= "Review calc.clj, focusing on correctness and code quality."
+    (is (= {:ok "Review calc.clj, focusing on correctness and code quality."}
            (expand/render-template
              "Review {target}, focusing on {scope}."
              [{:name "target" :default "the codebase"}
@@ -87,7 +85,7 @@
 
 (deftest test-render-template-no-params
   (testing "Template with no param slots passes through"
-    (is (= "Be direct and confident."
+    (is (= {:ok "Be direct and confident."}
            (expand/render-template
              "Be direct and confident."
              nil
@@ -95,11 +93,44 @@
 
 (deftest test-render-template-single-param
   (testing "Single param substitution"
-    (is (= "Fix the issue in calc.clj."
+    (is (= {:ok "Fix the issue in calc.clj."}
            (expand/render-template
              "Fix the issue in {target}."
              [{:name "target" :default "the codebase"}]
              ["calc.clj"])))))
+
+(deftest test-render-template-required-param-provided
+  (testing "Required param with arg succeeds"
+    (is (= {:ok "Debug the following error: NPE in foo.clj."}
+           (expand/render-template
+             "Debug the following error: {target}."
+             [{:name "target"}]
+             ["NPE in foo.clj"])))))
+
+(deftest test-render-template-required-param-missing
+  (testing "Required param without arg returns error"
+    (let [result (expand/render-template
+                   "Debug the following error: {target}."
+                   [{:name "target"}]
+                   [])]
+      (is (:error result))
+      (is (re-find #"target" (:error result))))))
+
+(deftest test-render-template-mixed-required-and-default
+  (testing "Mix of required and defaulted params"
+    (is (= {:ok "Deploy foo to staging."}
+           (expand/render-template
+             "Deploy {target} to {env}."
+             [{:name "target"}
+              {:name "env" :default "staging"}]
+             ["foo"])))
+    (let [result (expand/render-template
+                   "Deploy {target} to {env}."
+                   [{:name "target"}
+                    {:name "env" :default "staging"}]
+                   [])]
+      (is (:error result))
+      (is (re-find #"target" (:error result))))))
 
 
 ;; ============================================================================
@@ -261,6 +292,32 @@
                :user-text nil}
           result (expand/expand cmd test-base-expansions)]
       (is (= :tdd (:workflow result))))))
+
+(deftest test-expand-required-param-missing
+  (testing "Verb with missing required param produces warning, no expansion"
+    (let [expansions {:verbs {"debug" {:prompt "Debug the following error: {target}."
+                                        :params [{:name "target"}]
+                                        :workflow :standard}}}
+          cmd {:verb {:name "debug" :args []}
+               :modifiers []
+               :user-text nil}
+          result (expand/expand cmd expansions)]
+      (is (not (:expanded? result)))
+      (is (seq (:warnings result)))
+      (is (re-find #"target" (first (:warnings result)))))))
+
+(deftest test-expand-required-param-provided
+  (testing "Verb with required param provided expands normally"
+    (let [expansions {:verbs {"debug" {:prompt "Debug the following error: {target}."
+                                        :params [{:name "target"}]
+                                        :workflow :standard}}}
+          cmd {:verb {:name "debug" :args ["NPE in foo.clj"]}
+               :modifiers []
+               :user-text nil}
+          result (expand/expand cmd expansions)]
+      (is (:expanded? result))
+      (is (= "Debug the following error: NPE in foo.clj."
+             (:expanded-verb result))))))
 
 
 ;; ============================================================================

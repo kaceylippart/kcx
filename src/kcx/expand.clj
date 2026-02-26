@@ -20,28 +20,39 @@
 (defn render-template
   "Render a prompt template with positional args.
 
-   Params define named slots with string defaults:
-     [{:name \"target\" :default \"the codebase\"}
-      {:name \"scope\"  :default \"correctness and code quality\"}]
+   Params define named slots with optional defaults:
+     [{:name \"target\" :required true}                          ;; must be provided
+      {:name \"scope\"  :default \"correctness and code quality\"}] ;; falls back
 
    Args are positional: [\"calc.clj\" \"divide-fn\"]
 
-   Each param resolves to its positional arg if provided, otherwise its default."
+   Returns {:ok rendered-string} on success,
+   or {:error \"missing required param: target\"} if a required param has no arg."
   [template params args]
   (if (or (nil? params) (empty? params))
-    template
+    {:ok template}
     (let [args (vec (or args []))
-          substitutions
-          (into {}
-                (map-indexed
-                  (fn [i {:keys [name default]}]
-                    [name (or (get args i) default)])
-                  params))]
-      (reduce
-        (fn [text [param-name value]]
-          (str/replace text (str "{" param-name "}") (str value)))
-        template
-        substitutions))))
+          ;; Check for missing required params (no :default key = required)
+          missing (->> params
+                       (keep-indexed
+                         (fn [i param]
+                           (when (and (nil? (get args i))
+                                      (not (contains? param :default)))
+                             (:name param))))
+                       vec)]
+      (if (seq missing)
+        {:error (str "missing required param: " (str/join ", " missing))}
+        (let [substitutions
+              (into {}
+                    (map-indexed
+                      (fn [i {:keys [name default]}]
+                        [name (or (get args i) default)])
+                      params))]
+          {:ok (reduce
+                 (fn [text [param-name value]]
+                   (str/replace text (str "{" param-name "}") (str value)))
+                 template
+                 substitutions)})))))
 
 
 ;; ============================================================================
@@ -118,9 +129,10 @@
   (let [{:keys [name args]} verb-map
         verb-def (get-in expansions [:verbs name])]
     (if verb-def
-      [(render-template (:prompt verb-def) (:params verb-def) args)
-       (:workflow verb-def)
-       []]
+      (let [result (render-template (:prompt verb-def) (:params verb-def) args)]
+        (if (:error result)
+          [nil (:workflow verb-def) [(str "!" name " " (:error result))]]
+          [(:ok result) (:workflow verb-def) []]))
       ;; Unknown verb
       (let [known (keys (get expansions :verbs {}))
             suggestions (suggest-similar name known)
@@ -136,10 +148,14 @@
   (let [{:keys [name args]} mod-map
         mod-def (get-in expansions [:modifiers name])]
     (if mod-def
-      [{:key name
-        :prompt (render-template (:prompt mod-def) (:params mod-def) args)
-        :applies-to (or (:applies-to mod-def) :all)}
-       []]
+      (let [result (render-template (:prompt mod-def) (:params mod-def) args)]
+        (if (:error result)
+          [nil [(str "+" name " " (:error result))]]
+          [{:key name
+            :prompt (:ok result)
+            :applies-to (or (:applies-to mod-def) :all)}
+           []]))
+
       ;; Unknown modifier
       (let [known (keys (get expansions :modifiers {}))
             suggestions (suggest-similar name known)

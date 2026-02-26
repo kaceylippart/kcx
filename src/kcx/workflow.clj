@@ -91,6 +91,81 @@
 
 
 ;; ============================================================================
+;; Pipeline Directives
+;; ============================================================================
+;; Directives modify the workflow graph at runtime by removing stages.
+;; Each directive maps to a set of handler keywords to remove.
+
+(def ^:private directive->handlers
+  "Map of directive names to the handler keywords they remove."
+  {"skip-tests"  #{:tester}
+   "skip-review" #{:reviewer}
+   "fast"        #{:tester :reviewer}
+   "yolo"        #{:tester :reviewer :curator}})
+
+(def known-directives (set (keys directive->handlers)))
+
+(defn- remove-handler-from-workflow
+  "Remove all states with a given handler keyword from a workflow.
+   Rewires transitions: any state pointing to a removed state now
+   points to that removed state's :next target instead."
+  [workflow handler-key]
+  (let [states (:states workflow)
+        ;; Find states to remove (those with the target handler)
+        removed-states (set (keep (fn [[state-key state-def]]
+                                    (when (= handler-key (:handler state-def))
+                                      state-key))
+                                  states))
+        ;; Build a redirect map: removed-state → its :next
+        redirects (into {} (map (fn [s] [s (get-in states [s :next])]) removed-states))
+        ;; Follow redirect chains (in case consecutive states are removed)
+        resolve-redirect (fn [target]
+                           (loop [t target seen #{}]
+                             (if (or (nil? t) (contains? seen t) (not (contains? redirects t)))
+                               t
+                               (recur (get redirects t) (conj seen t)))))
+        ;; Rewire remaining states
+        new-states (into {}
+                         (keep (fn [[state-key state-def]]
+                                 (when-not (contains? removed-states state-key)
+                                   [state-key
+                                    (cond-> state-def
+                                      (:next state-def)
+                                      (update :next resolve-redirect)
+                                      (:on-fail state-def)
+                                      (update :on-fail resolve-redirect)
+                                      (:on-reject state-def)
+                                      (update :on-reject resolve-redirect))]))
+                               states))
+        ;; Fix initial state if it was removed
+        new-initial (resolve-redirect (:initial workflow))]
+    (assoc workflow
+           :states new-states
+           :initial new-initial)))
+
+(defn apply-directives
+  "Apply pipeline directives to a workflow, removing stages.
+   Returns {:workflow modified-workflow :warnings [...]}.
+
+   Directives are strings like \"skip-tests\", \"fast\", etc.
+   Unknown directives produce warnings but don't fail."
+  [workflow directives]
+  (if (empty? directives)
+    {:workflow workflow :warnings []}
+    (let [warnings (vec (keep (fn [d]
+                                (when-not (contains? known-directives d)
+                                  (str ">" d " is not a known directive. Known: "
+                                       (str/join ", " (map #(str ">" %) (sort known-directives))))))
+                              directives))
+          handlers-to-remove (reduce (fn [acc d]
+                                       (into acc (get directive->handlers d #{})))
+                                     #{}
+                                     directives)
+          modified (reduce remove-handler-from-workflow workflow handlers-to-remove)]
+      {:workflow modified :warnings warnings})))
+
+
+;; ============================================================================
 ;; Executor
 ;; ============================================================================
 

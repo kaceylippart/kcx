@@ -1,6 +1,7 @@
 (ns kcx.orchestrator-test
   (:require
     [clojure.test :refer [deftest testing is run-tests]]
+    [kcx.dsl :as dsl]
     [kcx.orchestrator :as orchestrator]
     [kcx.expand :as expand]))
 
@@ -70,7 +71,7 @@
 
 (deftest test-worker-prompt-uses-expanded-text
   (testing "Worker prompt builder uses expanded verb when available"
-    (let [cmd {:verb "fix" :target "calc.clj" :includes ["thorough"]
+    (let [cmd {:verb "fix" :target "calc.clj" :modifiers ["thorough"]
                :expanded? true
                :expanded-verb "Fix the issue in calc.clj."
                :expanded-modifiers [{:key "thorough" :prompt "Be thorough. Compare against the broader codebase." :applies-to :all}]}
@@ -85,7 +86,7 @@
 
 (deftest test-cmd->expandable-dsl
   (testing "DSL command adapts to expandable format"
-    (let [cmd {:verb "fix" :target "calc.clj" :includes ["thorough" "minimal"] :instruction "fix the bug"}
+    (let [cmd {:verb "fix" :target "calc.clj" :modifiers ["thorough" "minimal"] :instruction "fix the bug"}
           expandable (#'orchestrator/cmd->expandable cmd)]
       (is (= "fix" (get-in expandable [:verb :name])))
       (is (= ["calc.clj"] (get-in expandable [:verb :args])))
@@ -102,13 +103,13 @@
 
 (deftest test-cmd->expandable-no-target
   (testing "Global context target produces empty args"
-    (let [cmd {:verb "fix" :target "global_context" :includes []}
+    (let [cmd {:verb "fix" :target "global_context" :modifiers []}
           expandable (#'orchestrator/cmd->expandable cmd)]
       (is (= [] (get-in expandable [:verb :args]))))))
 
 (deftest test-expand-cmd-known-verb
   (testing "Known verb expands successfully"
-    (let [cmd {:verb "fix" :target "calc.clj" :includes ["thorough"]}
+    (let [cmd {:verb "fix" :target "calc.clj" :modifiers ["thorough"]}
           expanded (#'orchestrator/expand-cmd cmd)]
       (is (:expanded? expanded))
       (is (= "Fix the issue in calc.clj." (:expanded-verb expanded)))
@@ -120,7 +121,7 @@
 
 (deftest test-expand-cmd-unknown-verb
   (testing "Unknown verb produces warnings"
-    (let [cmd {:verb "yeet" :target "calc.clj" :includes []}
+    (let [cmd {:verb "yeet" :target "calc.clj" :modifiers []}
           expanded (#'orchestrator/expand-cmd cmd)]
       (is (not (:expanded? expanded)))
       (is (seq (:warnings expanded))))))
@@ -131,6 +132,61 @@
           expanded (#'orchestrator/expand-cmd cmd)]
       (is (not (:expanded? expanded)))
       (is (= "add error handling" (:prompt expanded))))))
+
+
+;; ============================================================================
+;; DSL Parser (4-symbol)
+;; ============================================================================
+
+(deftest test-dsl-basic-command
+  (testing "Basic !verb @target parses correctly"
+    (let [cmd (dsl/parse-command "kcx !fix @calculator.clj")]
+      (is (= "fix" (:verb cmd)))
+      (is (= "calculator.clj" (:target cmd)))
+      (is (= [] (:modifiers cmd)))
+      (is (= [] (:directives cmd))))))
+
+(deftest test-dsl-with-modifiers-and-directives
+  (testing "Full command with +modifier and >directive"
+    (let [cmd (dsl/parse-command "kcx !fix @calc.clj +thorough >skip-tests")]
+      (is (= "fix" (:verb cmd)))
+      (is (= "calc.clj" (:target cmd)))
+      (is (= ["thorough"] (:modifiers cmd)))
+      (is (= ["skip-tests"] (:directives cmd))))))
+
+(deftest test-dsl-multiple-directives
+  (testing "Multiple >directives parsed"
+    (let [cmd (dsl/parse-command "kcx !fix @calc.clj >skip-tests >skip-review")]
+      (is (= ["skip-tests" "skip-review"] (:directives cmd))))))
+
+(deftest test-dsl-inline-natural-language
+  (testing "Remaining text becomes instruction"
+    (let [cmd (dsl/parse-command "kcx !debug @calc.clj and let me know if there's anything else wrong")]
+      (is (= "debug" (:verb cmd)))
+      (is (= "calc.clj" (:target cmd)))
+      (is (= "and let me know if there's anything else wrong" (:instruction cmd))))))
+
+(deftest test-dsl-mixed-everything
+  (testing "Verb, target, modifier, directive, and natural language"
+    (let [cmd (dsl/parse-command "kcx !fix @calc.clj +thorough >fast just fix the typo")]
+      (is (= "fix" (:verb cmd)))
+      (is (= "calc.clj" (:target cmd)))
+      (is (= ["thorough"] (:modifiers cmd)))
+      (is (= ["fast"] (:directives cmd)))
+      (is (= "just fix the typo" (:instruction cmd))))))
+
+(deftest test-dsl-no-old-symbols
+  (testing "Old - and & symbols are not parsed as special"
+    (let [cmd (dsl/parse-command "kcx !fix @calc.clj -something &agent")]
+      ;; -something and &agent should end up in instruction, not parsed as special tokens
+      (is (= [] (:directives cmd)))
+      (is (some? (:instruction cmd))))))
+
+(deftest test-dsl-quoted-natural-language
+  (testing "Quoted prompt still works"
+    (let [cmd (dsl/parse-command "kcx \"add error handling\"")]
+      (is (= "prompt" (:verb cmd)))
+      (is (= "add error handling" (:prompt cmd))))))
 
 
 ;; ============================================================================

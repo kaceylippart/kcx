@@ -31,7 +31,7 @@
             :args (if (and (:target cmd) (not= "global_context" (:target cmd)))
                     [(:target cmd)]
                     [])}
-     :modifiers (mapv (fn [inc] {:name inc :args []}) (or (:includes cmd) []))
+     :modifiers (mapv (fn [m] {:name m :args []}) (or (:modifiers cmd) []))
      :user-text (:instruction cmd)}))
 
 (defn- expand-cmd
@@ -127,9 +127,17 @@
                    (doseq [w (:warnings cmd)]
                      (log/log! :warn "EXPANSION WARNING" {:warning w})))
         ;; Use workflow from expansion if available, fall back to verb->workflow
-        wf       (if-let [wf-type (:workflow cmd)]
+        base-wf  (if-let [wf-type (:workflow cmd)]
                    (workflow/get-workflow wf-type)
                    (workflow/verb->workflow (:verb cmd)))
+        ;; Apply pipeline directives (>skip-tests, >fast, etc.)
+        {:keys [workflow directive-warnings]}
+        (let [{:keys [workflow warnings]} (workflow/apply-directives base-wf (or (:directives cmd) []))]
+          {:workflow workflow :directive-warnings warnings})
+        wf       workflow
+        _        (when (seq directive-warnings)
+                   (doseq [w directive-warnings]
+                     (log/log! :warn "DIRECTIVE WARNING" {:warning w})))
         handlers (worker/build-handlers)
         job-id   (worker/start-job! cmd)
         [result lines]
@@ -141,10 +149,9 @@
                               (when-let [t (:target cmd)]
                                 (when (not= t "global_context") (str "@" t)))
                               "━━━")
-              ;; Show expansion warnings to user
-              (when (seq (:warnings cmd))
-                (doseq [w (:warnings cmd)]
-                  (worker/status! "⚠" w)))
+              ;; Show expansion + directive warnings to user
+              (doseq [w (concat (:warnings cmd) directive-warnings)]
+                (worker/status! "⚠" w))
               (let [result (workflow/run wf cmd handlers
                                         {:on-state (fn [state _def]
                                                      (log/log! :debug "STATE" {:state state}))})]
@@ -172,10 +179,10 @@
         (worker/status! "Original:" (:verb last-cmd)
                         (when-let [t (:target last-cmd)]
                           (when (not= t "global_context") (str "@" t))))
-        (when (seq (:includes redo-cmd))
-          (worker/status! "Adding:" (str/join " " (map #(str "+" %) (:includes redo-cmd)))))
-        (when (seq (:excludes redo-cmd))
-          (worker/status! "Excluding:" (str/join " " (map #(str "-" %) (:excludes redo-cmd)))))
+        (when (seq (:modifiers redo-cmd))
+          (worker/status! "Adding:" (str/join " " (map #(str "+" %) (:modifiers redo-cmd)))))
+        (when (seq (:directives redo-cmd))
+          (worker/status! "Directives:" (str/join " " (map #(str ">" %) (:directives redo-cmd)))))
         (when (:instruction redo-cmd)
           (worker/status! "Instruction:" (:instruction redo-cmd)))
         (worker/status! "")
@@ -195,7 +202,7 @@
   [cmd]
   (try
     (if (nil? cmd)
-      "ERROR: Invalid command. Use: kcx \"your prompt\" or kcx !verb @target +include -exclude"
+      "ERROR: Invalid command. Use: kcx !verb @target +modifier >directive"
       (let [verb (:verb cmd)]
         (case verb
           ;; Controller commands — no workflow needed

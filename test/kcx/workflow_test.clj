@@ -233,6 +233,86 @@
 
 
 ;; ============================================================================
+;; Pipeline Directives
+;; ============================================================================
+
+(deftest test-apply-directives-skip-tests
+  (testing ">skip-tests removes tester, rewires worker→reviewer"
+    (let [{:keys [workflow warnings]} (wf/apply-directives wf/standard-workflow ["skip-tests"])]
+      (is (empty? warnings))
+      ;; Worker should go straight to review
+      (is (= :review (get-in workflow [:states :work :next])))
+      ;; No tester states remain
+      (is (not (some (fn [[_ def]] (= :tester (:handler def))) (:states workflow)))))))
+
+(deftest test-apply-directives-skip-review
+  (testing ">skip-review removes reviewer, rewires tester→curator"
+    (let [{:keys [workflow warnings]} (wf/apply-directives wf/standard-workflow ["skip-review"])]
+      (is (empty? warnings))
+      ;; Tester should go to curate
+      (is (= :curate (get-in workflow [:states :test :next])))
+      ;; No reviewer states remain
+      (is (not (some (fn [[_ def]] (= :reviewer (:handler def))) (:states workflow)))))))
+
+(deftest test-apply-directives-fast
+  (testing ">fast removes tester and reviewer"
+    (let [{:keys [workflow warnings]} (wf/apply-directives wf/standard-workflow ["fast"])]
+      (is (empty? warnings))
+      ;; Worker goes straight to curate
+      (is (= :curate (get-in workflow [:states :work :next])))
+      ;; Only worker + curator remain
+      (is (= #{:worker :curator} (set (map :handler (vals (:states workflow)))))))))
+
+(deftest test-apply-directives-yolo
+  (testing ">yolo removes tester, reviewer, and curator"
+    (let [{:keys [workflow warnings]} (wf/apply-directives wf/standard-workflow ["yolo"])]
+      (is (empty? warnings))
+      ;; Worker goes straight to done
+      (is (= :done (get-in workflow [:states :work :next])))
+      ;; Only worker remains
+      (is (= #{:worker} (set (map :handler (vals (:states workflow)))))))))
+
+(deftest test-apply-directives-composable
+  (testing ">skip-tests >skip-review is equivalent to >fast"
+    (let [composed (:workflow (wf/apply-directives wf/standard-workflow ["skip-tests" "skip-review"]))
+          fast     (:workflow (wf/apply-directives wf/standard-workflow ["fast"]))]
+      ;; Both should have worker→curate
+      (is (= :curate (get-in composed [:states :work :next])))
+      (is (= :curate (get-in fast [:states :work :next])))
+      ;; Same handler set
+      (is (= (set (map :handler (vals (:states composed))))
+             (set (map :handler (vals (:states fast)))))))))
+
+(deftest test-apply-directives-unknown
+  (testing "Unknown directive produces warning"
+    (let [{:keys [workflow warnings]} (wf/apply-directives wf/standard-workflow ["yeet"])]
+      (is (= 1 (count warnings)))
+      (is (re-find #"yeet" (first warnings)))
+      ;; Workflow unchanged
+      (is (= (:states wf/standard-workflow) (:states workflow))))))
+
+(deftest test-apply-directives-empty
+  (testing "No directives returns workflow unchanged"
+    (let [{:keys [workflow warnings]} (wf/apply-directives wf/standard-workflow [])]
+      (is (empty? warnings))
+      (is (= (:states wf/standard-workflow) (:states workflow))))))
+
+(deftest test-apply-directives-executes
+  (testing "Modified workflow actually runs correctly"
+    (let [{:keys [workflow]} (wf/apply-directives wf/standard-workflow ["fast"])
+          handlers {:worker  (success-handler {:files-changed ["a.clj"] :summary "did work"})
+                    :curator (success-handler {:updated true})}
+          result (wf/run workflow {:verb "fix"} handlers)]
+      (is (:success result))
+      (is (= :done (:final-state result)))
+      (is (contains? (:artifacts result) :work))
+      (is (contains? (:artifacts result) :curate))
+      ;; No test or review artifacts
+      (is (not (contains? (:artifacts result) :test)))
+      (is (not (contains? (:artifacts result) :review))))))
+
+
+;; ============================================================================
 ;; Edge Cases
 ;; ============================================================================
 

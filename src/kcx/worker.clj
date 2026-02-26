@@ -72,13 +72,12 @@
    Uses expanded verb/modifiers when available, falls back to raw tokens.
    Optional reviewer-feedback is passed when retrying after rejection.
    Supports :instruction field for natural language context."
-  [{:keys [verb target includes excludes instruction expanded-verb expanded-modifiers expanded?] :as cmd}
+  [{:keys [verb target modifiers instruction expanded-verb expanded-modifiers expanded?] :as cmd}
    & {:keys [reviewer-feedback iteration]}]
   (let [;; Sanitize all inputs to prevent injection
         safe-verb (sanitize-shell-arg verb)
         safe-target (sanitize-shell-arg target)
-        safe-includes (map sanitize-shell-arg includes)
-        safe-excludes (map sanitize-shell-arg excludes)
+        safe-modifiers (map sanitize-shell-arg modifiers)
         safe-instruction (sanitize-shell-arg instruction)
         safe-reviewer-feedback (sanitize-shell-arg reviewer-feedback)
 
@@ -97,9 +96,8 @@
 
         ;; Legacy constraints (when no expansion)
         constraints (when-not expanded?
-                      (cond-> []
-                        (seq safe-includes) (conj (str "FOCUS ON: " (str/join ", " safe-includes)))
-                        (seq safe-excludes) (conj (str "AVOID: " (str/join ", " safe-excludes)))))
+                      (when (seq safe-modifiers)
+                        [(str "FOCUS ON: " (str/join ", " safe-modifiers))]))
 
         memory-context (state/build-memory-context cmd)
         retry-context (when safe-reviewer-feedback
@@ -343,17 +341,17 @@
 
 (defn merge-redo-command
   "Merge redo modifiers with the last command.
-   - New includes are added to existing includes
-   - New excludes are added to existing excludes
+   - New modifiers are added to existing modifiers
+   - New directives are added to existing directives
    - New instruction replaces or appends to existing instruction
    - Target from redo overrides if specified (not global_context)"
   [last-cmd redo-cmd]
-  (let [;; Merge includes (add new ones)
-        merged-includes (vec (distinct (concat (:includes last-cmd [])
-                                                (:includes redo-cmd []))))
-        ;; Merge excludes (add new ones)
-        merged-excludes (vec (distinct (concat (:excludes last-cmd [])
-                                                (:excludes redo-cmd []))))
+  (let [;; Merge modifiers (add new ones)
+        merged-modifiers (vec (distinct (concat (:modifiers last-cmd [])
+                                                 (:modifiers redo-cmd []))))
+        ;; Merge directives (add new ones)
+        merged-directives (vec (distinct (concat (:directives last-cmd [])
+                                                  (:directives redo-cmd []))))
         ;; Handle instruction - append if both exist, otherwise use whichever exists
         merged-instruction (cond
                              (and (:instruction last-cmd) (:instruction redo-cmd))
@@ -370,8 +368,8 @@
                         (:target redo-cmd)
                         (:target last-cmd))]
     (assoc last-cmd
-           :includes merged-includes
-           :excludes merged-excludes
+           :modifiers merged-modifiers
+           :directives merged-directives
            :instruction merged-instruction
            :target merged-target
            :is-redo true
@@ -686,7 +684,7 @@
   "Build a prompt for autonomous test creation.
    Uses expanded verb/modifiers when available.
    Supports :instruction field for natural language context."
-  [{:keys [verb target includes excludes instruction expanded-verb expanded-modifiers expanded?] :as cmd}]
+  [{:keys [verb target modifiers instruction expanded-verb expanded-modifiers expanded?] :as cmd}]
   (let [target-str (if (and target (not= target "global_context"))
                      (str "starting from " target)
                      "across the codebase")
@@ -698,9 +696,8 @@
         tester-modifiers (when (seq expanded-modifiers)
                            (expand/filter-modifiers-for :tester expanded-modifiers))
         constraints (when-not expanded?
-                      (cond-> []
-                        (seq includes) (conj (str "FOCUS ON: " (str/join ", " includes)))
-                        (seq excludes) (conj (str "AVOID: " (str/join ", " excludes)))))
+                      (when (seq modifiers)
+                        [(str "FOCUS ON: " (str/join ", " modifiers))]))
         memory-context (state/build-memory-context cmd)]
     (str
       "You are TESTER, an autonomous testing agent. " task-desc "\n"
@@ -778,17 +775,15 @@
 
 (defn build-worker-from-tests-prompt
   "Build a prompt for worker to implement code to pass tests."
-  [{:keys [target includes excludes]} test-files test-output]
+  [{:keys [target modifiers]} test-files test-output]
   (let [target-str (when (and target (not= target "global_context"))
                      (str " in " target))]
     (str
       "You are WORKER. Implement code" target-str " to make the tests pass.\n"
       "\nTest files: " (str/join ", " test-files) "\n"
       "\nTest output (currently failing):\n```\n" (subs test-output 0 (min 1000 (count test-output))) "\n```\n"
-      (when (seq includes)
-        (str "FOCUS ON: " (str/join ", " includes) ".\n"))
-      (when (seq excludes)
-        (str "AVOID: " (str/join ", " excludes) ".\n"))
+      (when (seq modifiers)
+        (str "FOCUS ON: " (str/join ", " modifiers) ".\n"))
       "\nPROTOCOL:\n"
       "1. Read the test files to understand requirements\n"
       "2. Implement the minimum code to pass tests\n"
@@ -806,7 +801,7 @@
   "Build a prompt for autonomous architectural planning.
    Uses expanded verb/modifiers when available.
    Supports :instruction field for natural language context."
-  [{:keys [verb target includes excludes instruction expanded-verb expanded-modifiers expanded?] :as cmd}]
+  [{:keys [verb target modifiers instruction expanded-verb expanded-modifiers expanded?] :as cmd}]
   (let [task-desc (if expanded?
                     expanded-verb
                     (let [action (case verb
@@ -822,9 +817,8 @@
         architect-modifiers (when (seq expanded-modifiers)
                               (expand/filter-modifiers-for :architect expanded-modifiers))
         constraints (when-not expanded?
-                      (cond-> []
-                        (seq includes) (conj (str "FOCUS ON: " (str/join ", " includes)))
-                        (seq excludes) (conj (str "AVOID: " (str/join ", " excludes)))))
+                      (when (seq modifiers)
+                        [(str "FOCUS ON: " (str/join ", " modifiers))]))
         memory-context (state/build-memory-context cmd)]
     (str
       "You are ARCHITECT, an autonomous design agent. " task-desc "\n"
@@ -887,17 +881,15 @@
 
 (defn build-worker-from-spec-prompt
   "Build a prompt for worker to implement based on architect's spec."
-  [{:keys [target includes excludes]} spec-files spec-summary]
+  [{:keys [target modifiers]} spec-files spec-summary]
   (let [target-str (when (and target (not= target "global_context"))
                      (str " in " target))]
     (str
       "You are WORKER. Implement the code" target-str " according to the architect's specification.\n"
       "\nSpecification files: " (str/join ", " spec-files) "\n"
       "\nSpec summary: " spec-summary "\n"
-      (when (seq includes)
-        (str "FOCUS ON: " (str/join ", " includes) ".\n"))
-      (when (seq excludes)
-        (str "AVOID: " (str/join ", " excludes) ".\n"))
+      (when (seq modifiers)
+        (str "FOCUS ON: " (str/join ", " modifiers) ".\n"))
       "\nPROTOCOL:\n"
       "1. Read the specification files thoroughly\n"
       "2. Implement code following the spec exactly\n"
@@ -914,7 +906,7 @@
 (defn build-tester-validation-prompt
   "Build a prompt for tester to validate worker's changes.
    Includes memory context of past test patterns and issues."
-  [worker-result {:keys [target includes excludes] :as cmd}]
+  [worker-result {:keys [target modifiers] :as cmd}]
   (let [memory-context (state/build-memory-context cmd)]
     (str
       "You are TESTER. Validate the changes made by Worker.\n"
@@ -923,8 +915,7 @@
       "\nFiles changed: " (str/join ", " (:files-changed worker-result)) "\n"
       "Worker summary: " (:summary worker-result) "\n"
       (when target (str "Target: " target "\n"))
-      (when (seq includes) (str "Focus on: " (str/join ", " includes) "\n"))
-      (when (seq excludes) (str "Avoid: " (str/join ", " excludes) "\n"))
+      (when (seq modifiers) (str "Focus on: " (str/join ", " modifiers) "\n"))
       "\nPROTOCOL:\n"
       "1. Read the changed files\n"
       "2. Write or update tests to cover the changes\n"

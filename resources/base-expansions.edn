@@ -19,19 +19,17 @@
             :params [{:name "target" :default "the codebase"}
                      {:name "change" :default "make the requested changes"}]
             :workflow :standard}
-  "debug"  {:prompt "Debug {target}."
-            :params [{:name "target" :default "the issue"}]
+  "debug"  {:prompt "Debug the following error: {target}."
+            :params [{:name "target"}]
             :workflow :standard}}
 
  :modifiers
  {"thorough"    {:prompt "Be thorough. Compare against the broader codebase."
                  :applies-to :all}
-  "minimal"     {:prompt "Make the smallest change possible."
+  "min"         {:prompt "Make the smallest change possible."
                  :applies-to :worker}
   "no-hedge"    {:prompt "Be direct and confident. No hedging."
                  :applies-to :reviewer}
-  "skip-tests"  {:prompt "Do not write or modify tests."
-                 :applies-to :worker}
   "explain"     {:prompt "Explain your reasoning at each step."
                  :applies-to :all}
   "style"       {:prompt "Follow the patterns in {ref}."
