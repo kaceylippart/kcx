@@ -204,6 +204,9 @@
       "\nRead the files. Verify correctness.\n"
       "\nOutput EXACTLY:\n"
       "REVIEW_RESULT|VERDICT|FEEDBACK\n"
+      "Where VERDICT is 'approve', 'reject', or 'skip'\n"
+      "Use 'skip' when changes are trivial and review is clearly unwarranted "
+      "(e.g. config files, documentation, .gitignore, comments-only changes).\n"
       "Example: REVIEW_RESULT|approve|Looks good, zero check added correctly")))
 
 (defn build-standalone-reviewer-prompt
@@ -867,7 +870,9 @@
       "4. Check for edge cases and error handling\n"
       "\nWhen done, output EXACTLY:\n"
       "TESTER_VALIDATION|VERDICT|FEEDBACK\n"
-      "Where VERDICT is 'pass' or 'fail'\n"
+      "Where VERDICT is 'pass', 'fail', or 'skip'\n"
+      "Use 'skip' when changes are trivial and testing is clearly unwarranted "
+      "(e.g. config files, documentation, .gitignore, comments-only changes).\n"
       "Example: TESTER_VALIDATION|pass|All tests pass, good coverage\n"
       "Example: TESTER_VALIDATION|fail|Missing null check test, edge case not handled\n"
       "\nBegin.")))
@@ -980,11 +985,12 @@
         ;; Validation mode: check worker's changes
         (let [result (run-tester-validation worker-result cmd)
               elapsed (format-elapsed start-ms)]
-          (if (= "pass" (:verdict result))
+          (if (#{"pass" "skip"} (:verdict result))
             (do
-              (status! "  ✓ TESTER passed in" elapsed)
+              (status! (if (= "skip" (:verdict result))
+                         "  ⊘ TESTER skipped in" "  ✓ TESTER passed in") elapsed)
               (status! "    " (:feedback result))
-              {:success true :verdict "pass" :feedback (:feedback result)})
+              {:success true :verdict (:verdict result) :feedback (:feedback result)})
             (do
               (status! "  ✗ TESTER failed in" elapsed)
               (status! "    " (:feedback result))
@@ -1052,11 +1058,12 @@
               review-input (assoc worker-result :files-changed all-files)
               result (run-reviewer review-input)
               elapsed (format-elapsed start-ms)]
-          (if (= "approve" (:verdict result))
+          (if (#{"approve" "skip"} (:verdict result))
             (do
-              (status! "  ✓ REVIEWER approved in" elapsed)
+              (status! (if (= "skip" (:verdict result))
+                         "  ⊘ REVIEWER skipped in" "  ✓ REVIEWER approved in") elapsed)
               (status! "    " (:feedback result))
-              {:success true :verdict "approve" :feedback (:feedback result)})
+              {:success true :verdict (:verdict result) :feedback (:feedback result)})
             (do
               (status! "  ✗ REVIEWER rejected in" elapsed)
               (status! "    " (:feedback result))
