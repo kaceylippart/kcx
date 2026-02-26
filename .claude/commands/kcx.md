@@ -39,6 +39,7 @@ Control:
   !help                 Show this help text
   !help @verb           Show details for a specific verb
   !memory               Show the current memory bank (project briefing)
+  !clear                Reset the memory bank to a fresh template
   !status               Show project status
   !jobs                 Show running jobs
 

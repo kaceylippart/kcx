@@ -259,3 +259,10 @@
            "\n\n═══════════════════\n"
            "Present the above memory bank to the user. Do NOT take further action.")
       "Memory bank is empty. Run a workflow to populate it.")))
+
+(defn clear-memory-bank!
+  "Reset the memory bank to a fresh template for the current project."
+  []
+  (let [project (get-current-project)]
+    (save-state! (create-template project))
+    (str "Memory bank cleared for project: " project)))
