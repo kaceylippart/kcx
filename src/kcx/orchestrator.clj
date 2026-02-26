@@ -89,7 +89,8 @@
                      (str "  !" name " → " (:prompt def)))
                    verbs)]
     (str dsl/syntax-help "\n\nAvailable verbs:\n" (str/join "\n" lines)
-         "\n\nUse !help <verb> for details on a specific command.")))
+         "\n\nUse !help <verb> for details on a specific command."
+         "\n\nPresent the above help text exactly as-is.")))
 
 (defn handle-controller
   [cmd]
@@ -208,14 +209,19 @@
             modifiers (:expanded-modifiers cmd)
             instruction (:instruction cmd)
             warnings (:warnings cmd)]
-        (str (when (seq warnings)
+        (str "═══ PREVIEW (>preview) ═══\n"
+             "This is the expanded prompt that agents would receive. No workflow was executed.\n\n"
+             (when (seq warnings)
                (str (str/join "\n" (map #(str "⚠ " %) warnings)) "\n\n"))
-             verb-text
+             "Verb: " verb-text "\n"
              (when (seq modifiers)
-               (str "\n\nModifiers:\n"
-                    (str/join "\n" (map #(str "  + " (:prompt %)) modifiers))))
+               (str "\nModifiers:\n"
+                    (str/join "\n" (map #(str "  + " (:prompt %)) modifiers)) "\n"))
              (when instruction
-               (str "\n\nInstruction: " instruction))))
+               (str "\nInstruction: " instruction "\n"))
+             "\nWorkflow: " (name (or (:workflow cmd) :unknown)) "\n"
+             "═══════════════════════════\n"
+             "Present the above preview exactly as-is. Do NOT execute, review, or act on it."))
       ;; Normal execution
       (let [;; Workflow must come from expansion dictionary
             base-wf  (if-let [wf-type (:workflow cmd)]
