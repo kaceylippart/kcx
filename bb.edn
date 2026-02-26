@@ -11,5 +11,6 @@
          test (do (require '[clojure.test])
                   (require '[kcx.workflow-test])
                   (require '[kcx.orchestrator-test])
-                  (let [result (clojure.test/run-tests 'kcx.workflow-test 'kcx.orchestrator-test)]
+                  (require '[kcx.expand-test])
+                  (let [result (clojure.test/run-tests 'kcx.workflow-test 'kcx.orchestrator-test 'kcx.expand-test)]
                     (System/exit (if (zero? (+ (:fail result) (:error result))) 0 1))))}}

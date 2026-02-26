@@ -1,0 +1,349 @@
+(ns kcx.expand-test
+  (:require
+    [clojure.test :refer [deftest testing is run-tests]]
+    [kcx.expand :as expand]))
+
+
+;; ============================================================================
+;; Test Fixtures — mock expansion dictionaries
+;; ============================================================================
+
+(def test-base-expansions
+  {:verbs
+   {"review" {:prompt "Review {target}, focusing on {scope}."
+              :params [{:name "target" :default "the codebase"}
+                       {:name "scope"  :default :omit}]
+              :workflow :standard}
+    "fix"    {:prompt "Fix the issue in {target}."
+              :params [{:name "target" :default "the codebase"}]
+              :workflow :standard}
+    "tdd"    {:prompt "Write tests first for {target}, then implement."
+              :params [{:name "target" :default "the codebase"}]
+              :workflow :tdd}}
+   :modifiers
+   {"thorough"    {:prompt "Compare against the broader codebase."
+                   :applies-to :all}
+    "no-hedge"    {:prompt "Be direct and confident."
+                   :applies-to :reviewer}
+    "minimal"     {:prompt "Make the smallest change possible."
+                   :applies-to :worker}
+    "skip-tests"  {:prompt "Do not write or modify tests."
+                   :applies-to :worker}
+    "style"       {:prompt "Follow the patterns in {ref}."
+                   :params [{:name "ref" :default "the existing codebase"}]
+                   :applies-to :worker}
+    "explain"     {:prompt "Explain your reasoning at each step."
+                   :applies-to :all}}})
+
+(def test-project-expansions
+  {:verbs
+   {"deploy" {:prompt "Deploy {target} to staging."
+              :params [{:name "target" :default "the application"}]
+              :workflow :standard}}
+   :modifiers
+   {"our-style" {:prompt "Follow the team API conventions in routes.clj."
+                 :applies-to :worker}}})
+
+(def test-personal-expansions
+  {:verbs
+   {"review" {:prompt "Review {target} with extreme scrutiny. Miss nothing."
+              :params [{:name "target" :default "the codebase"}]
+              :workflow :standard}}
+   :modifiers
+   {"thorough" {:prompt "Go deep. Read every related file. Leave no stone unturned."
+                :applies-to :all}}})
+
+
+;; ============================================================================
+;; Template Rendering
+;; ============================================================================
+
+(deftest test-render-template-all-params
+  (testing "Template with all params provided"
+    (is (= "Review calc.clj, focusing on divide-fn."
+           (expand/render-template
+             "Review {target}, focusing on {scope}."
+             [{:name "target" :default "the codebase"}
+              {:name "scope"  :default :omit}]
+             ["calc.clj" "divide-fn"])))))
+
+(deftest test-render-template-default-string
+  (testing "Missing param uses string default"
+    (is (= "Review the codebase."
+           (expand/render-template
+             "Review {target}, focusing on {scope}."
+             [{:name "target" :default "the codebase"}
+              {:name "scope"  :default :omit}]
+             [])))))
+
+(deftest test-render-template-omit-default
+  (testing "Missing param with :omit drops the sentence"
+    (let [result (expand/render-template
+                   "Review {target}, focusing on {scope}."
+                   [{:name "target" :default "the codebase"}
+                    {:name "scope"  :default :omit}]
+                   ["calc.clj"])]
+      (is (= "Review calc.clj." result)))))
+
+(deftest test-render-template-no-params
+  (testing "Template with no param slots passes through"
+    (is (= "Be direct and confident."
+           (expand/render-template
+             "Be direct and confident."
+             nil
+             [])))))
+
+(deftest test-render-template-partial-args
+  (testing "Some args provided, rest use defaults"
+    (is (= "Fix the issue in calc.clj."
+           (expand/render-template
+             "Fix the issue in {target}."
+             [{:name "target" :default "the codebase"}]
+             ["calc.clj"])))))
+
+
+;; ============================================================================
+;; Dictionary Merging
+;; ============================================================================
+
+(deftest test-merge-expansions-base-only
+  (testing "Base expansions work alone"
+    (let [merged (expand/merge-expansions test-base-expansions nil nil)]
+      (is (= "Review {target}, focusing on {scope}."
+             (get-in merged [:verbs "review" :prompt])))
+      (is (= "Compare against the broader codebase."
+             (get-in merged [:modifiers "thorough" :prompt]))))))
+
+(deftest test-merge-expansions-personal-overrides-base
+  (testing "Personal overrides base at key level"
+    (let [merged (expand/merge-expansions test-base-expansions nil test-personal-expansions)]
+      ;; Personal review replaces base review entirely
+      (is (= "Review {target} with extreme scrutiny. Miss nothing."
+             (get-in merged [:verbs "review" :prompt])))
+      ;; Personal thorough replaces base thorough
+      (is (= "Go deep. Read every related file. Leave no stone unturned."
+             (get-in merged [:modifiers "thorough" :prompt])))
+      ;; Base fix still present (not overridden)
+      (is (some? (get-in merged [:verbs "fix"]))))))
+
+(deftest test-merge-expansions-project-adds
+  (testing "Project expansions add new entries"
+    (let [merged (expand/merge-expansions test-base-expansions test-project-expansions nil)]
+      ;; Project adds deploy verb
+      (is (some? (get-in merged [:verbs "deploy"])))
+      ;; Project adds our-style modifier
+      (is (some? (get-in merged [:modifiers "our-style"])))
+      ;; Base entries still present
+      (is (some? (get-in merged [:verbs "review"]))))))
+
+(deftest test-merge-expansions-resolution-order
+  (testing "Personal > project > base"
+    (let [;; All three define "review" differently
+          project-with-review (assoc-in test-project-expansions
+                                        [:verbs "review"]
+                                        {:prompt "Project review of {target}."
+                                         :params [{:name "target" :default "the codebase"}]})
+          merged (expand/merge-expansions test-base-expansions project-with-review test-personal-expansions)]
+      ;; Personal wins
+      (is (= "Review {target} with extreme scrutiny. Miss nothing."
+             (get-in merged [:verbs "review" :prompt]))))))
+
+
+;; ============================================================================
+;; Core Expansion
+;; ============================================================================
+
+(deftest test-expand-verb-with-args
+  (testing "Verb expands with positional args"
+    (let [cmd {:verb {:name "review" :args ["calc.clj" "divide-fn"]}
+               :modifiers []
+               :user-text nil}
+          result (expand/expand cmd test-base-expansions)]
+      (is (:expanded? result))
+      (is (= "Review calc.clj, focusing on divide-fn."
+             (:expanded-verb result)))
+      (is (= :standard (:workflow result))))))
+
+(deftest test-expand-verb-no-args-uses-defaults
+  (testing "Verb with no args uses defaults"
+    (let [cmd {:verb {:name "review" :args []}
+               :modifiers []
+               :user-text nil}
+          result (expand/expand cmd test-base-expansions)]
+      (is (:expanded? result))
+      (is (= "Review the codebase."
+             (:expanded-verb result))))))
+
+(deftest test-expand-verb-partial-args
+  (testing "Verb with some args, rest default"
+    (let [cmd {:verb {:name "review" :args ["calc.clj"]}
+               :modifiers []
+               :user-text nil}
+          result (expand/expand cmd test-base-expansions)]
+      (is (= "Review calc.clj."
+             (:expanded-verb result))))))
+
+(deftest test-expand-modifiers
+  (testing "Modifiers expand correctly"
+    (let [cmd {:verb {:name "fix" :args ["calc.clj"]}
+               :modifiers [{:name "thorough" :args []}
+                           {:name "no-hedge" :args []}]
+               :user-text nil}
+          result (expand/expand cmd test-base-expansions)]
+      (is (= 2 (count (:expanded-modifiers result))))
+      (is (= "Compare against the broader codebase."
+             (:prompt (first (:expanded-modifiers result)))))
+      (is (= :all (:applies-to (first (:expanded-modifiers result)))))
+      (is (= :reviewer (:applies-to (second (:expanded-modifiers result))))))))
+
+(deftest test-expand-modifier-with-args
+  (testing "Modifier with args substitutes params"
+    (let [cmd {:verb {:name "fix" :args ["calc.clj"]}
+               :modifiers [{:name "style" :args ["routes.clj"]}]
+               :user-text nil}
+          result (expand/expand cmd test-base-expansions)]
+      (is (= "Follow the patterns in routes.clj."
+             (:prompt (first (:expanded-modifiers result))))))))
+
+(deftest test-expand-modifier-default-param
+  (testing "Modifier with no args uses default"
+    (let [cmd {:verb {:name "fix" :args ["calc.clj"]}
+               :modifiers [{:name "style" :args []}]
+               :user-text nil}
+          result (expand/expand cmd test-base-expansions)]
+      (is (= "Follow the patterns in the existing codebase."
+             (:prompt (first (:expanded-modifiers result))))))))
+
+(deftest test-expand-unknown-verb
+  (testing "Unknown verb produces warning"
+    (let [cmd {:verb {:name "yeet" :args ["calc.clj"]}
+               :modifiers []
+               :user-text nil}
+          result (expand/expand cmd test-base-expansions)]
+      (is (not (:expanded? result)))
+      (is (seq (:warnings result)))
+      (is (re-find #"yeet" (first (:warnings result)))))))
+
+(deftest test-expand-unknown-modifier
+  (testing "Unknown modifier produces warning"
+    (let [cmd {:verb {:name "fix" :args ["calc.clj"]}
+               :modifiers [{:name "yolo" :args []}]
+               :user-text nil}
+          result (expand/expand cmd test-base-expansions)]
+      ;; Verb still expands
+      (is (some? (:expanded-verb result)))
+      ;; But warning for unknown modifier
+      (is (seq (:warnings result)))
+      (is (re-find #"yolo" (first (:warnings result)))))))
+
+(deftest test-expand-preserves-user-text
+  (testing "User text preserved through expansion"
+    (let [cmd {:verb {:name "review" :args ["calc.clj"]}
+               :modifiers []
+               :user-text "the divide function has a bug"}
+          result (expand/expand cmd test-base-expansions)]
+      (is (= "the divide function has a bug" (:user-text result))))))
+
+(deftest test-expand-natural-language-passthrough
+  (testing "Pure natural language (no verb) passes through unexpanded"
+    (let [cmd {:verb nil
+               :prompt "add error handling to the calculator"
+               :modifiers []
+               :user-text nil}
+          result (expand/expand cmd test-base-expansions)]
+      (is (not (:expanded? result)))
+      (is (= "add error handling to the calculator" (:prompt result))))))
+
+(deftest test-expand-workflow-override
+  (testing "Verb expansion can specify workflow type"
+    (let [cmd {:verb {:name "tdd" :args ["calc.clj"]}
+               :modifiers []
+               :user-text nil}
+          result (expand/expand cmd test-base-expansions)]
+      (is (= :tdd (:workflow result))))))
+
+
+;; ============================================================================
+;; Filter Modifiers by Agent Role
+;; ============================================================================
+
+(deftest test-filter-modifiers-for-worker
+  (testing "Worker gets :worker and :all modifiers"
+    (let [mods [{:key "thorough" :prompt "..." :applies-to :all}
+                {:key "no-hedge" :prompt "..." :applies-to :reviewer}
+                {:key "minimal"  :prompt "..." :applies-to :worker}]]
+      (is (= 2 (count (expand/filter-modifiers-for :worker mods)))))))
+
+(deftest test-filter-modifiers-for-reviewer
+  (testing "Reviewer gets :reviewer and :all modifiers"
+    (let [mods [{:key "thorough" :prompt "..." :applies-to :all}
+                {:key "no-hedge" :prompt "..." :applies-to :reviewer}
+                {:key "minimal"  :prompt "..." :applies-to :worker}]]
+      (is (= 2 (count (expand/filter-modifiers-for :reviewer mods)))))))
+
+(deftest test-filter-modifiers-empty
+  (testing "No modifiers returns empty"
+    (is (empty? (expand/filter-modifiers-for :worker [])))))
+
+
+;; ============================================================================
+;; Suggest Similar (for "did you mean?" warnings)
+;; ============================================================================
+
+(deftest test-suggest-similar-close-match
+  (testing "Suggests close matches for typos"
+    (let [known ["thorough" "minimal" "skip-tests" "no-hedge"]
+          suggestions (expand/suggest-similar "throough" known)]
+      (is (some #(= "thorough" %) suggestions)))))
+
+(deftest test-suggest-similar-prefix-match
+  (testing "Suggests prefix matches"
+    (let [known ["thorough" "minimal" "skip-tests" "no-hedge"]
+          suggestions (expand/suggest-similar "skip" known)]
+      (is (some #(= "skip-tests" %) suggestions)))))
+
+(deftest test-suggest-similar-no-match
+  (testing "No suggestions for completely different input"
+    (let [known ["thorough" "minimal" "skip-tests"]
+          suggestions (expand/suggest-similar "xyzzy" known)]
+      (is (empty? suggestions)))))
+
+
+;; ============================================================================
+;; Disk Loading
+;; ============================================================================
+
+(deftest test-load-base-expansions
+  (testing "Loads base-expansions.edn from resources"
+    (let [base (expand/load-base-expansions)]
+      (is (map? base))
+      (is (some? (get-in base [:verbs "fix"])))
+      (is (some? (get-in base [:verbs "review"])))
+      (is (some? (get-in base [:modifiers "thorough"])))
+      ;; Verify structure
+      (is (string? (get-in base [:verbs "fix" :prompt])))
+      (is (keyword? (get-in base [:verbs "fix" :workflow]))))))
+
+(deftest test-load-expansions-from-missing-file
+  (testing "Loading from nonexistent file returns nil"
+    (is (nil? (expand/load-expansions-file "/tmp/does-not-exist-kcx.edn")))))
+
+(deftest test-load-and-merge-full-stack
+  (testing "Load base + merge with in-memory project/personal"
+    (let [base (expand/load-base-expansions)
+          merged (expand/merge-expansions base test-project-expansions test-personal-expansions)]
+      ;; Personal review overrides base
+      (is (= "Review {target} with extreme scrutiny. Miss nothing."
+             (get-in merged [:verbs "review" :prompt])))
+      ;; Project deploy added
+      (is (some? (get-in merged [:verbs "deploy"])))
+      ;; Base fix still there
+      (is (some? (get-in merged [:verbs "fix"]))))))
+
+
+;; ============================================================================
+;; Run
+;; ============================================================================
+
+(when (= *file* (System/getProperty "babashka.file"))
+  (run-tests))
