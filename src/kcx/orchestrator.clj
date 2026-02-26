@@ -221,7 +221,7 @@
                (str "\nInstruction: " instruction "\n"))
              "\nWorkflow: " (name (or (:workflow cmd) :unknown)) "\n"
              "═══════════════════════════\n"
-             "Present the above preview exactly as-is. Do NOT execute, review, or act on it."))
+             "Present the above preview to the user. Do NOT execute or act on it. Ask the user if they want to run the command without >preview."))
       ;; Normal execution
       (let [;; Workflow must come from expansion dictionary
             base-wf  (if-let [wf-type (:workflow cmd)]
