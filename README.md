@@ -6,11 +6,12 @@
 
 ## Overview
 
-KCX is a multi-agent MCP server that orchestrates AI workflows through a data-driven state machine. It provides a dense DSL for expressing intent and routes commands through specialized agents that run to completion without manual intervention.
+KCX is a multi-agent MCP server that orchestrates AI workflows through a data-driven state machine. A dense DSL compresses intent into minimal keystrokes — tokens expand into rich, precise prompts through a layered dictionary system, then route through specialized agents that run to completion without manual intervention.
 
 ### Core Principles
 
-- **Brevity** — Symbols (`!`, `@`, `+`, `-`) maximize intent per keystroke
+- **Brevity** — Tokens (`!verb`, `+modifier`, `@arg`) compress verbose prompts into keystrokes
+- **Precision** — Tokens expand deterministically; no ambiguity, no interpretation
 - **Context efficiency** — Persistent EDN memory bank, not ever-expanding chat history
 - **Deterministic workflows** — Sequence controlled by a state machine in code, not prompts
 - **Constrain sequence, not capability** — Agents get full tool access; the engine controls ordering
@@ -57,44 +58,102 @@ bb test
 
 ## DSL
 
+KCX uses three symbols. Each token is a key into an expansion dictionary — `!review` doesn't mean "review", it expands into a full, curated prompt.
+
 ```
-kcx !verb @target +include -exclude >output &agent "instruction"
+kcx !verb @arg1 @arg2 +modifier "additional context"
 ```
 
 | Symbol | Purpose | Example |
 |--------|---------|---------|
-| `!` | Verb (action) | `!fix`, `!gen`, `!debug` |
-| `@` | Target (file) | `@calculator.clj` |
-| `+` | Include constraint | `+error-handling` |
-| `-` | Exclude constraint | `-println` |
-| `>` | Output redirect | `>output.clj` |
-| `&` | Agent preference | `&reviewer` |
-| `"..."` | Natural language | `"add retry logic"` |
+| `!` | Verb (action) — expands to base prompt | `!fix`, `!review`, `!tdd` |
+| `@` | Argument — fills template params | `@calculator.clj`, `@divide-fn` |
+| `+` | Modifier — appends behavioral directives | `+thorough`, `+skip-tests` |
+| `"..."` | Natural language — additional context | `"the divide function has a bug"` |
 
-Natural language works standalone too:
+`@` arguments bind to the immediately preceding `!` or `+`. Standalone `@` is an error.
+
+Natural language works standalone too — it bypasses expansion entirely:
 
 ```bash
 kcx "add error handling to the calculator"
 ```
 
-### Verbs
-
-| Category | Verbs |
-|----------|-------|
-| Project | `status`, `proj`, `list` |
-| Code | `gen`, `create`, `edit`, `fix`, `build`, `debug` |
-| Testing | `test`, `tdd` |
-| Review | `review`, `check`, `lint` |
-| Repeat | `redo` (re-run last command with modifications) |
-
 ### Examples
 
 ```bash
-kcx !status                                              # Project status
-kcx !fix @calculator.clj +error-handling                 # Fix with constraint
-kcx !gen +web-api "build a campaign list endpoint"       # Generate with instruction
-kcx !tdd @utils.clj                                      # TDD workflow
-kcx !redo -docstrings "don't modify foo.clj"             # Re-run with changes
+kcx !fix @calculator.clj                          # "Fix the issue in calculator.clj."
+kcx !review @calc.clj @divide-fn                   # "Review calc.clj, focusing on divide-fn."
+kcx !review                                        # "Review the codebase." (defaults)
+kcx !fix @calc.clj +thorough +skip-tests           # Fix with modifiers
+kcx !tdd @utils.clj                                # TDD workflow
+kcx !fix @calc.clj "division by zero crashes"      # DSL + natural language
+```
+
+## Prompt Expansion
+
+Tokens are keys into a layered expansion dictionary. `!review @calc.clj` expands to `"Review calc.clj, focusing on {scope}."` — the full prompt you would have typed manually, but in 3 tokens.
+
+### How It Works
+
+1. **Parser** extracts tokens from input (`!verb`, `@args`, `+modifiers`)
+2. **Expander** resolves each token against the dictionary
+3. **Template engine** fills `{param}` slots with `@` arguments (positional)
+4. **Prompt builders** receive the expanded text, not raw tokens
+
+### Template System
+
+Verb and modifier definitions use `{param}` templates with positional arguments:
+
+```clojure
+;; Definition
+{"review" {:prompt "Review {target}, focusing on {scope}."
+           :params [{:name "target" :default "the codebase"}
+                    {:name "scope"  :default :omit}]
+           :workflow :standard}}
+
+;; Expansion
+;; !review @calc.clj @divide-fn  → "Review calc.clj, focusing on divide-fn."
+;; !review @calc.clj             → "Review calc.clj."  (scope omitted)
+;; !review                       → "Review the codebase."  (all defaults)
+```
+
+Params with `:omit` default drop the containing clause when no argument is provided.
+
+### Three-Tier Dictionary
+
+Expansions merge in priority order: **personal > project > base**.
+
+| Tier | Location | Purpose |
+|------|----------|---------|
+| **Base** | `resources/base-expansions.edn` | Ships with KCX — sensible defaults |
+| **Project** | `.kcx/expansions.edn` | Team-shared vocabulary |
+| **Personal** | `~/.kcx/expansions.edn` | Individual overrides |
+
+If your personal dictionary defines `!review`, it fully replaces the base definition — no partial merging.
+
+### Unknown Tokens
+
+Unresolved tokens warn with "did you mean?" suggestions based on edit distance:
+
+```
+⚠ !reveiw not found in expansions. Did you mean: !review?
+```
+
+### Modifier Targeting
+
+Modifiers specify which agent they apply to:
+
+| `applies-to` | Agents |
+|---------------|--------|
+| `:all` | Every agent in the pipeline |
+| `:worker` | Worker only |
+| `:reviewer` | Reviewer only |
+
+```clojure
+{"+thorough"   {:prompt "Be thorough." :applies-to :all}
+ "+no-hedge"   {:prompt "Be direct."   :applies-to :reviewer}
+ "+minimal"    {:prompt "Smallest change possible." :applies-to :worker}}
 ```
 
 ## Workflow Engine
@@ -131,7 +190,7 @@ The state machine handles retries automatically:
 KCX uses EDN files as a persistent memory bank. The Curator agent compresses workflow results into structured memory after each run.
 
 ```clojure
-{:meta {:version "0.5.0" :created "2025-01-13T..."}
+{:meta {:version "0.5.1" :created "2025-01-13T..."}
  :stack {:language "Clojure" :framework "Babashka"}
  :active-context {:task "Current task" :status "in-progress"}
  :memory [{:action "fix" :target "calculator.clj" :priority :high}]}
@@ -155,9 +214,12 @@ kcx/
 ├── kcx.clj              # Entry point
 ├── VERSION              # Version tracking
 ├── bb.edn               # Babashka config & tasks
+├── resources/
+│   └── base-expansions.edn  # Base expansion dictionary
 ├── src/kcx/
 │   ├── core.clj         # MCP server & request handling
 │   ├── dsl.clj          # DSL parser
+│   ├── expand.clj       # Prompt expansion engine
 │   ├── workflow.clj     # State machine definitions & executor
 │   ├── orchestrator.clj # Command dispatch & result formatting
 │   ├── worker.clj       # Agent spawning, prompts, handlers
@@ -166,8 +228,9 @@ kcx/
 │   ├── logging.clj      # Session logging
 │   └── utils.clj        # Utilities
 ├── test/kcx/
-│   ├── workflow_test.clj     # State machine tests
-│   └── orchestrator_test.clj # Orchestrator tests
+│   ├── workflow_test.clj     # State machine tests (14 tests)
+│   ├── orchestrator_test.clj # Orchestrator tests (6 tests)
+│   └── expand_test.clj       # Expansion engine tests (29 tests)
 ├── playground/          # Test environment
 ├── logs/                # Session logs
 └── memory-bank/         # Project state files
@@ -182,6 +245,15 @@ kcx/
 | `write_file` | Write content to files |
 
 ## Changelog
+
+### v0.5.1 — Prompt Expansion Engine
+- Token expansion system: `!verb` and `+modifier` resolve against layered dictionaries
+- Template rendering with `{param}` slots, positional args, and `:omit` support
+- Three-tier dictionary merging (base < project < personal)
+- "Did you mean?" suggestions for typos (Levenshtein + prefix matching)
+- Modifier filtering by agent role (`:worker`, `:reviewer`, `:all`)
+- Base vocabulary: 7 verbs, 6 modifiers
+- 29 tests, 111 assertions
 
 ### v0.5.0 — State Machine Refactor
 - Replace 4 duplicated workflow functions with data-driven state machine
