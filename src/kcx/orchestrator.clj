@@ -104,6 +104,7 @@
       "proj" (state/switch-project (:target cmd))
       "list" (state/list-projects)
       "status" (str "→ status\n" (state/list-projects))
+      "memory" (state/format-memory-bank)
       "jobs" (let [running (worker/get-running-jobs)]
                (if (empty? running)
                  "No running jobs."
@@ -305,7 +306,7 @@
       (let [verb (:verb cmd)]
         (case verb
           ;; Controller commands — no workflow needed
-          ("help" "proj" "list" "status" "jobs") (handle-controller cmd)
+          ("help" "proj" "list" "status" "jobs" "memory") (handle-controller cmd)
 
           ;; Redo — merge with last command and re-run
           "redo" (execute-redo cmd)

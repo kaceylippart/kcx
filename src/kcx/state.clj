@@ -238,3 +238,24 @@
           (str "=== PROJECT BRIEFING ===\n\n"
                (str/join "\n\n" sections)
                "\n\n========================\n"))))))
+
+(defn format-memory-bank
+  "Format the full memory bank for display, including metadata and all sections."
+  []
+  (let [state (load-state)
+        meta (:meta state)
+        briefing (:briefing state)]
+    (if briefing
+      (str "═══ MEMORY BANK ═══\n"
+           "Project: " (:project meta "unknown") "\n"
+           "Version: " (:version meta "?") "\n"
+           "Commands: " (:command-count meta 0) "\n"
+           "Updated: " (:updated meta "never") "\n"
+           "\n"
+           (str/join "\n\n"
+                     (for [k briefing-sections
+                           :let [v (get briefing k)]]
+                       (str "── " (name k) " ──\n" (or v "(empty)"))))
+           "\n\n═══════════════════\n"
+           "Present the above memory bank to the user. Do NOT take further action.")
+      "Memory bank is empty. Run a workflow to populate it.")))

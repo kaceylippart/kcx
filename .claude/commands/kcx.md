@@ -34,6 +34,14 @@ Verbs:
   !review @target       Review {target}, focusing on {scope}.                [review]
   !explain @target      Explain how {target} works.                          [explain]
 
+Control:
+  !redo                 Re-run last command with additional modifiers/instructions
+  !help                 Show this help text
+  !help @verb           Show details for a specific verb
+  !memory               Show the current memory bank (project briefing)
+  !status               Show project status
+  !jobs                 Show running jobs
+
 Modifiers:
   +error %msg     "The error message is: {msg}."          (all agents)
   +thorough       "Be thorough. Compare against codebase." (all agents)
@@ -56,6 +64,7 @@ Examples:
   /kcx !build a new REST endpoint for users
   /kcx !fix @calc.clj >fast just fix the typo
   /kcx !explain @workflow.clj
+  /kcx !redo +step-by-step            (re-run last command with modifier)
   /kcx !help @review                  (verb details — requires MCP call)
 ```
 
