@@ -1,14 +1,10 @@
 (ns kcx.core
   (:require
     [cheshire.core :as json]
-    [clojure.java.io :as io]
-    [clojure.pprint :as pprint]
     [clojure.string :as str]
     [kcx.dsl :as dsl]
     [kcx.logging :as log]
     [kcx.orchestrator :as orchestrator]
-    [kcx.state :as state]
-    [kcx.utils :refer [write-file]]
     [kcx.worker :as worker]))
 
 
@@ -44,19 +40,6 @@
                      (log/log! :debug "DSL PARSE" {:parsed parsed})
                      (orchestrator/execute-command parsed)))
 
-                 "read_state"
-                 (let [current-state (state/load-state)]
-                   (log/log! :debug "READ STATE" current-state)
-                   (with-out-str (pprint/pprint current-state)))
-
-                 "write_file"
-                 (let [path (get args "path")
-                       content (get args "content")]
-                   (io/make-parents path)
-                   (write-file path content)
-                   (log/log! :debug "WRITE FILE" {:path path :size (count content)})
-                   (str "Wrote to " path))
-
                  "Unknown tool")]
     (log/log-tool-result! tool-name result)
     result))
@@ -89,15 +72,7 @@
                                          :properties {:command {:type "string"
                                                                 :description "KCX command (e.g., 'kcx !fix @file.clj +error-handling')"}}
                                          :required ["command"]}}
-                          {:name "read_state"
-                           :description "Read the current KCX project state (memory bank)"
-                           :inputSchema {:type "object" :properties {}}}
-                          {:name "write_file"
-                           :description "Write content to a file"
-                           :inputSchema {:type "object"
-                                         :properties {:path {:type "string" :description "File path to write"}
-                                                      :content {:type "string" :description "Content to write"}}
-                                         :required ["path" "content"]}}]}
+]}
 
                  "tools/call"
                  (let [progress-token (get-in params ["_meta" "progressToken"])]
