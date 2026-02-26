@@ -778,7 +778,7 @@
   [cmd]
   (let [prompt (build-tester-prompt cmd)
         _ (log/log! :info "TESTER START" {:verb (:verb cmd) :target (:target cmd)})
-        result (spawn-claude prompt :tools "Read,Write,Edit,Glob,Grep" :agent-name "TESTER")]
+        result (spawn-claude prompt :agent-name "TESTER")]
     (if (:success result)
       (let [parsed (parse-tester-result (:output result))]
         (log/log! :info "TESTER DONE" parsed)
@@ -902,7 +902,7 @@
   [cmd]
   (let [prompt (build-architect-prompt cmd)
         _ (log/log! :info "ARCHITECT START" {:verb (:verb cmd) :target (:target cmd)})
-        result (spawn-claude prompt :tools "Read,Write,Glob,Grep" :agent-name "ARCHITECT")]
+        result (spawn-claude prompt :agent-name "ARCHITECT")]
     (if (:success result)
       (let [parsed (parse-architect-result (:output result))]
         (log/log! :info "ARCHITECT DONE" parsed)
@@ -981,7 +981,7 @@
   [worker-result cmd]
   (let [prompt (build-tester-validation-prompt worker-result cmd)
         _ (log/log! :info "TESTER VALIDATION START" {:files (:files-changed worker-result)})
-        result (spawn-claude prompt :tools "Read,Write,Edit,Glob,Grep,Bash" :agent-name "TESTER")]
+        result (spawn-claude prompt :agent-name "TESTER")]
     (if (:success result)
       (let [parsed (parse-tester-validation (:output result))]
         (log/log! :info "TESTER VALIDATION DONE" parsed)
@@ -1110,7 +1110,6 @@
         (let [start-ms (System/currentTimeMillis)
               prompt (build-standalone-reviewer-prompt cmd)
               spawn-result (spawn-claude prompt
-                                        :tools "Read,Glob,Grep,Bash"
                                         :timeout-ms 300000
                                         :agent-name "REVIEWER")
               elapsed (format-elapsed start-ms)]
@@ -1193,7 +1192,7 @@
             prompt (build-curator-prompt cmd artifacts current-state)
             result (spawn-claude prompt
                                 :timeout-ms 120000
-                                :tools "Read"
+                                :timeout-ms 120000
                                 :agent-name "CURATOR")
             elapsed (format-elapsed start-ms)]
         (if (:success result)
@@ -1313,7 +1312,6 @@
   (let [start-ms (System/currentTimeMillis)
         prompt (build-explainer-prompt cmd)
         result (spawn-claude prompt
-                             :tools "Read,Glob,Grep"
                              :timeout-ms 300000
                              :agent-name "EXPLAINER")
         elapsed (format-elapsed start-ms)]
