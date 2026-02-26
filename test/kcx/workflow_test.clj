@@ -70,6 +70,16 @@
       (is (contains? (:artifacts result) :implement))
       (is (contains? (:artifacts result) :validate)))))
 
+(deftest test-review-workflow-happy-path
+  (testing "Review: reviewer → done (single agent, no curator)"
+    (let [handlers {:reviewer (success-handler {:verdict "approve" :feedback "lgtm" :review-text "Full review here"})}
+          result   (wf/run wf/review-workflow {:verb "review"} handlers)]
+      (is (:success result))
+      (is (= :done (:final-state result)))
+      (is (contains? (:artifacts result) :review))
+      (is (not (contains? (:artifacts result) :curate)))
+      (is (not (contains? (:artifacts result) :work))))))
+
 (deftest test-explain-workflow-happy-path
   (testing "Explain: explainer → done (single read-only agent)"
     (let [handlers {:explainer (success-handler {:explanation "This module does X" :summary "Explained the module"})}

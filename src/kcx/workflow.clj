@@ -50,13 +50,12 @@
     :curate      {:handler :curator   :next :done}}})
 
 (def review-workflow
-  "WORKER (review) → CURATOR → DONE
-   Lightweight path for review/check/lint — no testing or secondary review."
+  "REVIEWER → DONE
+   Single read-only agent for code review. No implementation, no memory update."
   {:id      :review
-   :initial :work
+   :initial :review
    :states
-   {:work   {:handler :worker  :next :curate :on-fail :failed}
-    :curate {:handler :curator :next :done}}})
+   {:review {:handler :reviewer :next :done :on-fail :failed}}})
 
 (def explain-workflow
   "EXPLAINER → DONE

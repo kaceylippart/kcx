@@ -199,11 +199,44 @@
       (when (seq reviewer-modifiers)
         (str "\n## DIRECTIVES\n"
              (str/join "\n" (map :prompt reviewer-modifiers)) "\n"))
-      "Summary: " (:summary worker-result) "\n"
+      (when (:summary worker-result)
+        (str "Summary: " (:summary worker-result) "\n"))
       "\nRead the files. Verify correctness.\n"
       "\nOutput EXACTLY:\n"
       "REVIEW_RESULT|VERDICT|FEEDBACK\n"
       "Example: REVIEW_RESULT|approve|Looks good, zero check added correctly")))
+
+(defn build-standalone-reviewer-prompt
+  "Build prompt for standalone review (no prior worker).
+   Reviewer explores the target and reviews it directly."
+  [{:keys [target instruction expanded-verb expanded? expanded-modifiers] :as cmd}]
+  (let [task-desc (if expanded?
+                    expanded-verb
+                    (str "Review " (or target "the codebase")))
+        reviewer-modifiers (when (seq expanded-modifiers)
+                             (expand/filter-modifiers-for :reviewer expanded-modifiers))
+        memory-context (state/build-memory-context cmd)]
+    (str
+      "You are REVIEWER. Your task: " task-desc "\n"
+      (when instruction
+        (str "\n" instruction "\n"))
+      (when (seq reviewer-modifiers)
+        (str "\n## DIRECTIVES\n"
+             (str/join "\n" (map :prompt reviewer-modifiers)) "\n"))
+      (when memory-context
+        (str "\n" memory-context "\n"))
+      "\n## PROTOCOL\n"
+      "1. Read the target file(s) and any closely related code.\n"
+      "2. Assess correctness, code quality, edge cases, and potential issues.\n"
+      "3. Note any bugs, security concerns, or improvement opportunities.\n"
+      "\n## CONSTRAINTS\n"
+      "- Do NOT create or modify any files.\n"
+      "- Your output IS the review.\n"
+      "\n## OUTPUT (required at end)\n"
+      "REVIEW_RESULT|VERDICT|FEEDBACK\n"
+      "Where VERDICT is 'approve' or 'reject'\n"
+      "Example: REVIEW_RESULT|approve|Code is clean, good error handling, one minor suggestion: consider adding a docstring to foo\n"
+      "\nBegin.")))
 
 
 (defn parse-worker-result
@@ -1062,30 +1095,62 @@
                :raw-output (:raw-output result)})))))))
 
 (defn handle-reviewer
-  "Reviewer handler — reviews worker's changes, approves or rejects.
-   Reads worker artifacts for file list and summary."
+  "Reviewer handler — reviews code, approves or rejects.
+   In pipeline mode (after worker): reviews worker's changes.
+   In standalone mode (review workflow): explores target directly."
   [cmd artifacts]
   (let [worker-result (or (:work artifacts) (:implement artifacts))
-        ;; Include architect files if present
-        arch-files (get-in artifacts [:architect :files-changed])
-        all-files (distinct (concat (or arch-files [])
-                                    (or (:files-changed worker-result) [])))]
-    (status! "→ Handing off to REVIEWER..." (str "(" (count all-files) " file" (when (not= 1 (count all-files)) "s") " to review)"))
-    (when *current-job*
-      (update-job-phase! *current-job* :reviewer {:agent :reviewer}))
-    (let [start-ms (System/currentTimeMillis)
-          review-input (assoc worker-result :files-changed all-files)
-          result (run-reviewer review-input)
-          elapsed (format-elapsed start-ms)]
-      (if (= "approve" (:verdict result))
-        (do
-          (status! "  ✓ REVIEWER approved in" elapsed)
-          (status! "    " (:feedback result))
-          {:success true :verdict "approve" :feedback (:feedback result)})
-        (do
-          (status! "  ✗ REVIEWER rejected in" elapsed)
-          (status! "    " (:feedback result))
-          {:success false :verdict (:verdict result) :feedback (:feedback result)})))))
+        standalone? (nil? worker-result)]
+    (if standalone?
+      ;; Standalone review — reviewer explores the target directly
+      (do
+        (status! "→ Handing off to REVIEWER...")
+        (when *current-job*
+          (update-job-phase! *current-job* :reviewer {:agent :reviewer}))
+        (let [start-ms (System/currentTimeMillis)
+              prompt (build-standalone-reviewer-prompt cmd)
+              spawn-result (spawn-claude prompt
+                                        :tools "Read,Glob,Grep"
+                                        :timeout-ms 300000
+                                        :agent-name "REVIEWER")
+              elapsed (format-elapsed start-ms)]
+          (if (:success spawn-result)
+            (let [parsed (parse-review-result (:output spawn-result))]
+              (log/log! :info "REVIEWER DONE (standalone)" parsed)
+              (if (= "approve" (:verdict parsed))
+                (do
+                  (status! "  ✓ REVIEWER approved in" elapsed)
+                  (status! "    " (:feedback parsed))
+                  {:success true :verdict "approve" :feedback (:feedback parsed)
+                   :review-text (:output spawn-result)})
+                (do
+                  (status! "  ✓ REVIEWER completed in" elapsed)
+                  (status! "    " (:feedback parsed))
+                  {:success true :verdict (:verdict parsed) :feedback (:feedback parsed)
+                   :review-text (:output spawn-result)})))
+            (do
+              (status! "  ✗ REVIEWER failed after" elapsed)
+              {:success false :summary (str "Reviewer failed: " (:error spawn-result))}))))
+      ;; Pipeline review — reviewing worker's changes
+      (let [arch-files (get-in artifacts [:architect :files-changed])
+            all-files (distinct (concat (or arch-files [])
+                                        (or (:files-changed worker-result) [])))]
+        (status! "→ Handing off to REVIEWER..." (str "(" (count all-files) " file" (when (not= 1 (count all-files)) "s") " to review)"))
+        (when *current-job*
+          (update-job-phase! *current-job* :reviewer {:agent :reviewer}))
+        (let [start-ms (System/currentTimeMillis)
+              review-input (assoc worker-result :files-changed all-files)
+              result (run-reviewer review-input)
+              elapsed (format-elapsed start-ms)]
+          (if (= "approve" (:verdict result))
+            (do
+              (status! "  ✓ REVIEWER approved in" elapsed)
+              (status! "    " (:feedback result))
+              {:success true :verdict "approve" :feedback (:feedback result)})
+            (do
+              (status! "  ✗ REVIEWER rejected in" elapsed)
+              (status! "    " (:feedback result))
+              {:success false :verdict (:verdict result) :feedback (:feedback result)})))))))
 
 (defn build-curator-prompt
   "Build a prompt for curator to intelligently update the memory bank."

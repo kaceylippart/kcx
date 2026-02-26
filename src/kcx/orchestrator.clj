@@ -77,10 +77,12 @@
   (try
     (let [success?   (:success result)
           artifacts  (:artifacts result)
-          ;; Check for explainer output (explain workflow)
-          explanation (get-in artifacts [:explain :explanation])]
-      (if explanation
+          ;; Check for single-agent read-only outputs
+          explanation (get-in artifacts [:explain :explanation])
+          review-text (get-in artifacts [:review :review-text])]
+      (cond
         ;; Explain workflow — pass the full explanation to parent Claude
+        explanation
         (str
           (if success?
             "═══ EXPLANATION ═══\n\n"
@@ -90,7 +92,21 @@
           (if success?
             "Present the above explanation to the user. Do NOT take further action."
             "Explainer failed. Present this to the user."))
+
+        ;; Standalone review — pass the full review to parent Claude
+        review-text
+        (str
+          (if success?
+            "═══ CODE REVIEW ═══\n\n"
+            "═══ CODE REVIEW FAILED ═══\n\n")
+          review-text
+          "\n\n"
+          (if success?
+            "Present the above review to the user. Do NOT take further action."
+            "Review failed. Present this to the user."))
+
         ;; Standard workflow — files, summaries, etc.
+        :else
         (let [all-files  (->> (vals artifacts)
                               (mapcat #(or (:files-changed %) []))
                               distinct)
