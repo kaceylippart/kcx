@@ -21,11 +21,6 @@
     :controller))
 
 
-(defn requires-workflow?
-  "Determine if a command requires multi-agent workflow"
-  [{:keys [verb]}]
-  (contains? #{"gen" "create" "edit" "refactor" "fix" "build" "test" "tdd" "debug" "review"} verb))
-
 
 (def agent-capabilities
   {:controller

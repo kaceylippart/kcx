@@ -30,8 +30,8 @@
     "style"       {:prompt "Follow the patterns in {ref}."
                    :params [{:name "ref" :default "the existing codebase"}]
                    :applies-to :worker}
-    "explain"     {:prompt "Explain your reasoning at each step."
-                   :applies-to :all}}})
+    "step-by-step" {:prompt "Explain your reasoning at each step."
+                    :applies-to :all}}})
 
 (def test-project-expansions
   {:verbs

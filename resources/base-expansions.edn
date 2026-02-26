@@ -21,7 +21,10 @@
             :workflow :standard}
   "debug"  {:prompt "Debug the following error: {target}."
             :params [{:name "target"}]
-            :workflow :standard}}
+            :workflow :standard}
+  "explain" {:prompt "Explain how {target} works."
+             :params [{:name "target" :default "the codebase"}]
+             :workflow :explain}}
 
  :modifiers
  {"thorough"    {:prompt "Be thorough. Compare against the broader codebase."
@@ -30,8 +33,8 @@
                  :applies-to :worker}
   "no-hedge"    {:prompt "Be direct and confident. No hedging."
                  :applies-to :reviewer}
-  "explain"     {:prompt "Explain your reasoning at each step."
-                 :applies-to :all}
+  "step-by-step" {:prompt "Explain your reasoning at each step."
+                   :applies-to :all}
   "style"       {:prompt "Follow the patterns in {ref}."
                  :params [{:name "ref" :default "the existing codebase"}]
                  :applies-to :worker}}}

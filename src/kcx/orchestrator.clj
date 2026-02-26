@@ -6,7 +6,6 @@
    Handlers (kcx.worker) control capability."
   (:require
     [clojure.string :as str]
-    [kcx.agents :as agents]
     [kcx.expand :as expand]
     [kcx.logging :as log]
     [kcx.state :as state]
@@ -28,9 +27,10 @@
     {:verb nil :prompt (:prompt cmd) :modifiers [] :user-text nil}
     ;; DSL command — adapt to expandable shape
     {:verb {:name (:verb cmd)
-            :args (if (and (:target cmd) (not= "global_context" (:target cmd)))
-                    [(:target cmd)]
-                    [])}
+            :args (or (:args cmd)
+                      (if (and (:target cmd) (not= "global_context" (:target cmd)))
+                        [(:target cmd)]
+                        []))}
      :modifiers (mapv (fn [m] {:name m :args []}) (or (:modifiers cmd) []))
      :user-text (:instruction cmd)}))
 
@@ -77,34 +77,46 @@
   (try
     (let [success?   (:success result)
           artifacts  (:artifacts result)
-          ;; Collect files from all agents
-          all-files  (->> (vals artifacts)
-                          (mapcat #(or (:files-changed %) []))
-                          distinct)
-          ;; Get summaries from key agents
-          arch-summary   (get-in artifacts [:architect :summary])
-          worker-summary (or (get-in artifacts [:work :summary])
-                             (get-in artifacts [:implement :summary]))
-          review-feedback (get-in artifacts [:review :feedback])]
-      (str
-        (if success?
-          "═══ TASK COMPLETED SUCCESSFULLY ═══\n"
-          "═══ TASK FAILED ═══\n")
-        "\n"
-        (when (seq all-files)
-          (str "Files modified:\n"
-               (str/join "\n" (map #(str "  • " %) all-files))
-               "\n\n"))
-        (when arch-summary
-          (str "Architecture/Planning:\n  " arch-summary "\n\n"))
-        (when worker-summary
-          (str "Implementation:\n  " worker-summary "\n\n"))
-        (when (and success? review-feedback)
-          (str "Reviewer assessment:\n  " review-feedback "\n\n"))
-        (if success?
-          "KCX workflow complete. Present the above summary to the user. Do NOT take further action — do not review, fix, or modify any files mentioned above."
-          (str "KCX workflow FAILED. Present the above summary to the user.\n"
-               "Retries: " (pr-str (:retries result))))))
+          ;; Check for explainer output (explain workflow)
+          explanation (get-in artifacts [:explain :explanation])]
+      (if explanation
+        ;; Explain workflow — pass the full explanation to parent Claude
+        (str
+          (if success?
+            "═══ EXPLANATION ═══\n\n"
+            "═══ EXPLANATION FAILED ═══\n\n")
+          explanation
+          "\n\n"
+          (if success?
+            "Present the above explanation to the user. Do NOT take further action."
+            "Explainer failed. Present this to the user."))
+        ;; Standard workflow — files, summaries, etc.
+        (let [all-files  (->> (vals artifacts)
+                              (mapcat #(or (:files-changed %) []))
+                              distinct)
+              arch-summary   (get-in artifacts [:architect :summary])
+              worker-summary (or (get-in artifacts [:work :summary])
+                                 (get-in artifacts [:implement :summary]))
+              review-feedback (get-in artifacts [:review :feedback])]
+          (str
+            (if success?
+              "═══ TASK COMPLETED SUCCESSFULLY ═══\n"
+              "═══ TASK FAILED ═══\n")
+            "\n"
+            (when (seq all-files)
+              (str "Files modified:\n"
+                   (str/join "\n" (map #(str "  • " %) all-files))
+                   "\n\n"))
+            (when arch-summary
+              (str "Architecture/Planning:\n  " arch-summary "\n\n"))
+            (when worker-summary
+              (str "Implementation:\n  " worker-summary "\n\n"))
+            (when (and success? review-feedback)
+              (str "Reviewer assessment:\n  " review-feedback "\n\n"))
+            (if success?
+              "KCX workflow complete. Present the above summary to the user. Do NOT take further action — do not review, fix, or modify any files mentioned above."
+              (str "KCX workflow FAILED. Present the above summary to the user.\n"
+                   "Retries: " (pr-str (:retries result))))))))
     (catch Exception e
       (str "ERROR: Failed to format workflow result - " (.getMessage e)))))
 
@@ -212,8 +224,6 @@
           "redo" (execute-redo cmd)
 
           ;; Everything else goes through the workflow engine
-          (if (or (= verb "prompt") (agents/requires-workflow? cmd))
-            (run-workflow-command cmd)
-            (handle-controller cmd)))))
+          (run-workflow-command cmd))))
     (catch Exception e
       (str "ERROR: Command execution failed - " (.getMessage e)))))

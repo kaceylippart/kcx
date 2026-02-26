@@ -606,7 +606,7 @@
               ;; Time for heartbeat
               (>= elapsed-since-heartbeat heartbeat-interval-ms)
               (do
-                (status! "  ⋯" agent-name "working..." (str "[" (format-elapsed spawn-start) "]"))
+                (status! "  ⋯" agent-name "working...")
                 (Thread/sleep 1000)
                 (recur now))
 
@@ -1203,6 +1203,71 @@
          :raw-output (:raw-output result)}))))
 
 
+;; ============================================================================
+;; Explainer Agent
+;; ============================================================================
+;; Read-only agent that explores code and explains it.
+;; Returns explanation as text — no files written, no structured output needed.
+
+(defn build-explainer-prompt
+  "Build a prompt for the explainer agent.
+   Uses expanded verb when available, otherwise constructs from raw tokens."
+  [{:keys [target instruction expanded-verb expanded? expanded-modifiers] :as cmd}]
+  (let [task-desc (if expanded?
+                    expanded-verb
+                    (str "Explain how " (or target "the codebase") " works."))
+        modifiers (when (seq expanded-modifiers)
+                    (expand/filter-modifiers-for :explainer expanded-modifiers))
+        memory-context (state/build-memory-context cmd)]
+    (str
+      "You are EXPLAINER. Your task: " task-desc "\n"
+      (when instruction
+        (str "\n" instruction "\n"))
+      (when (seq modifiers)
+        (str "\n## DIRECTIVES\n"
+             (str/join "\n" (map :prompt modifiers)) "\n"))
+      (when memory-context
+        (str "\n" memory-context "\n"))
+      "\n## PROTOCOL\n"
+      "1. Read the target file(s) and any closely related code.\n"
+      "2. Explain clearly: what it does, how it works, and why it's structured that way.\n"
+      "3. Note key dependencies, patterns, and non-obvious design decisions.\n"
+      "\n## CONSTRAINTS\n"
+      "- Do NOT create or modify any files.\n"
+      "- Do NOT write code, tests, or documentation files.\n"
+      "- Your entire output IS the explanation — write it clearly and concisely.\n"
+      "\nBegin.")))
+
+(defn handle-explainer
+  "Explainer handler — reads code and returns explanation as text.
+   No files written, no structured result parsing."
+  [cmd artifacts]
+  (status! "→ Handing off to EXPLAINER...")
+  (when *current-job*
+    (update-job-phase! *current-job* :explainer {:agent :explainer}))
+  (let [start-ms (System/currentTimeMillis)
+        prompt (build-explainer-prompt cmd)
+        result (spawn-claude prompt
+                             :tools "Read,Glob,Grep"
+                             :timeout-ms 300000
+                             :agent-name "EXPLAINER")
+        elapsed (format-elapsed start-ms)]
+    (if (:success result)
+      (do
+        (status! "  ✓ EXPLAINER completed in" elapsed)
+        {:success true
+         :explanation (:output result)
+         :summary (let [out (:output result)
+                        len (count out)]
+                    (if (> len 200)
+                      (str (subs out 0 200) "...")
+                      out))})
+      (do
+        (status! "  ✗ EXPLAINER failed after" elapsed)
+        {:success false
+         :summary (str "Explainer failed: " (:error result))}))))
+
+
 (defn build-handlers
   "Build the handlers map for the workflow state machine.
    Each handler: (fn [cmd artifacts] -> {:success bool ...})"
@@ -1211,4 +1276,5 @@
    :tester    handle-tester
    :reviewer  handle-reviewer
    :curator   handle-curator
-   :architect handle-architect})
+   :architect handle-architect
+   :explainer handle-explainer})

@@ -22,9 +22,12 @@
       (is (clojure.string/starts-with? result "ERROR:")))))
 
 (deftest test-unknown-verb
-  (testing "Unknown non-workflow verb routes to controller"
-    (let [result (orchestrator/execute-command {:verb "unknown_verb"})]
-      (is (string? result)))))
+  (testing "Unknown verb still routes through expansion (warns, uses standard workflow)"
+    (let [cmd {:verb "unknown_verb" :target "test.clj" :modifiers []}
+          expanded (#'orchestrator/expand-cmd cmd)]
+      ;; Unknown verb produces warnings, not expanded
+      (is (not (:expanded? expanded)))
+      (is (seq (:warnings expanded))))))
 
 
 ;; ============================================================================
@@ -86,7 +89,7 @@
 
 (deftest test-cmd->expandable-dsl
   (testing "DSL command adapts to expandable format"
-    (let [cmd {:verb "fix" :target "calc.clj" :modifiers ["thorough" "minimal"] :instruction "fix the bug"}
+    (let [cmd {:verb "fix" :target "calc.clj" :args ["calc.clj"] :modifiers ["thorough" "minimal"] :instruction "fix the bug"}
           expandable (#'orchestrator/cmd->expandable cmd)]
       (is (= "fix" (get-in expandable [:verb :name])))
       (is (= ["calc.clj"] (get-in expandable [:verb :args])))
@@ -143,6 +146,7 @@
     (let [cmd (dsl/parse-command "kcx !fix @calculator.clj")]
       (is (= "fix" (:verb cmd)))
       (is (= "calculator.clj" (:target cmd)))
+      (is (= ["calculator.clj"] (:args cmd)))
       (is (= [] (:modifiers cmd)))
       (is (= [] (:directives cmd))))))
 
@@ -187,6 +191,39 @@
     (let [cmd (dsl/parse-command "kcx \"add error handling\"")]
       (is (= "prompt" (:verb cmd)))
       (is (= "add error handling" (:prompt cmd))))))
+
+(deftest test-dsl-percent-alias
+  (testing "% works as alias for @"
+    (let [cmd (dsl/parse-command "kcx !explain %workflows")]
+      (is (= "explain" (:verb cmd)))
+      (is (= "workflows" (:target cmd)))
+      (is (= ["workflows"] (:args cmd))))))
+
+(deftest test-dsl-multi-params
+  (testing "Multiple @ and % fill positional args in order"
+    (let [cmd (dsl/parse-command "kcx !edit @calc.clj %error-handling")]
+      (is (= "edit" (:verb cmd)))
+      (is (= "calc.clj" (:target cmd)))
+      (is (= ["calc.clj" "error-handling"] (:args cmd))))))
+
+(deftest test-dsl-quoted-param
+  (testing "Quoted param values have quotes stripped"
+    (let [cmd (dsl/parse-command "kcx !edit @calc.clj %\"add error handling\"")]
+      (is (= "calc.clj" (:target cmd)))
+      (is (= ["calc.clj" "add error handling"] (:args cmd))))))
+
+(deftest test-dsl-quoted-at-param
+  (testing "Quoted @ param also works"
+    (let [cmd (dsl/parse-command "kcx !explain @\"test-driven development\"")]
+      (is (= "test-driven development" (:target cmd)))
+      (is (= ["test-driven development"] (:args cmd))))))
+
+(deftest test-dsl-mixed-params-with-modifiers
+  (testing "Params and modifiers coexist"
+    (let [cmd (dsl/parse-command "kcx !edit @calc.clj %\"fix the bug\" +thorough >fast")]
+      (is (= ["calc.clj" "fix the bug"] (:args cmd)))
+      (is (= ["thorough"] (:modifiers cmd)))
+      (is (= ["fast"] (:directives cmd))))))
 
 
 ;; ============================================================================

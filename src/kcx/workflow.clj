@@ -58,6 +58,14 @@
    {:work   {:handler :worker  :next :curate :on-fail :failed}
     :curate {:handler :curator :next :done}}})
 
+(def explain-workflow
+  "EXPLAINER → DONE
+   Single read-only agent. No files written, no memory update."
+  {:id      :explain
+   :initial :explain
+   :states
+   {:explain {:handler :explainer :next :done :on-fail :failed}}})
+
 (def architect-workflow
   "ARCHITECT → WORKER → TESTER → REVIEWER → CURATOR → DONE
    Architect creates specs first, then standard pipeline."
@@ -78,6 +86,7 @@
     ("test" "tdd")                        tdd-workflow
     ("plan" "arch" "design" "analyze")    architect-workflow
     ("review" "check" "lint")             review-workflow
+    ("explain" "why" "how")              explain-workflow
     standard-workflow))
 
 (defn get-workflow
@@ -87,6 +96,7 @@
     :tdd       tdd-workflow
     :architect architect-workflow
     :review    review-workflow
+    :explain   explain-workflow
     standard-workflow))
 
 

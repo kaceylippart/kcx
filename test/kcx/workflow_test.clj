@@ -70,6 +70,17 @@
       (is (contains? (:artifacts result) :implement))
       (is (contains? (:artifacts result) :validate)))))
 
+(deftest test-explain-workflow-happy-path
+  (testing "Explain: explainer → done (single read-only agent)"
+    (let [handlers {:explainer (success-handler {:explanation "This module does X" :summary "Explained the module"})}
+          result   (wf/run wf/explain-workflow {:verb "explain"} handlers)]
+      (is (:success result))
+      (is (= :done (:final-state result)))
+      (is (contains? (:artifacts result) :explain))
+      ;; No curator or architect artifacts
+      (is (not (contains? (:artifacts result) :curate)))
+      (is (not (contains? (:artifacts result) :architect))))))
+
 (deftest test-architect-workflow-happy-path
   (testing "Architect: architect → work → test → review → curate → done"
     (let [handlers {:architect (success-handler {:files-changed ["spec.md"]})
@@ -195,6 +206,9 @@
     (is (= :architect (:id (wf/verb->workflow "arch"))))
     (is (= :architect (:id (wf/verb->workflow "design"))))
     (is (= :architect (:id (wf/verb->workflow "analyze"))))
+    (is (= :explain (:id (wf/verb->workflow "explain"))))
+    (is (= :explain (:id (wf/verb->workflow "why"))))
+    (is (= :explain (:id (wf/verb->workflow "how"))))
     ;; Unknown verbs default to standard
     (is (= :standard (:id (wf/verb->workflow "build"))))))
 
