@@ -7,10 +7,41 @@
   (:require
     [clojure.string :as str]
     [kcx.agents :as agents]
+    [kcx.expand :as expand]
     [kcx.logging :as log]
     [kcx.state :as state]
     [kcx.worker :as worker]
     [kcx.workflow :as workflow]))
+
+
+;; ============================================================================
+;; Expansion Integration
+;; ============================================================================
+
+(defonce base-expansions (expand/load-base-expansions))
+
+(defn- cmd->expandable
+  "Adapt a parsed DSL command to the shape expand/expand expects."
+  [cmd]
+  (if (= "prompt" (:verb cmd))
+    ;; Natural language — passthrough (no expansion)
+    {:verb nil :prompt (:prompt cmd) :modifiers [] :user-text nil}
+    ;; DSL command — adapt to expandable shape
+    {:verb {:name (:verb cmd)
+            :args (if (and (:target cmd) (not= "global_context" (:target cmd)))
+                    [(:target cmd)]
+                    [])}
+     :modifiers (mapv (fn [inc] {:name inc :args []}) (or (:includes cmd) []))
+     :user-text (:instruction cmd)}))
+
+(defn- expand-cmd
+  "Run expansion on a parsed command. Returns the cmd merged with expansion results."
+  [cmd]
+  (let [expandable (cmd->expandable cmd)
+        expanded (expand/expand expandable base-expansions)]
+    ;; Merge expansion results back onto the original cmd
+    (merge cmd (select-keys expanded [:expanded-verb :expanded-modifiers
+                                       :workflow :warnings :expanded?]))))
 
 
 ;; ============================================================================
@@ -71,8 +102,9 @@
         (when (and success? review-feedback)
           (str "Reviewer assessment:\n  " review-feedback "\n\n"))
         (if success?
-          "No further action needed - changes have been implemented, tested, and reviewed."
-          (str "Retries: " (pr-str (:retries result))))))
+          "KCX workflow complete. Present the above summary to the user. Do NOT take further action — do not review, fix, or modify any files mentioned above."
+          (str "KCX workflow FAILED. Present the above summary to the user.\n"
+               "Retries: " (pr-str (:retries result))))))
     (catch Exception e
       (str "ERROR: Failed to format workflow result - " (.getMessage e)))))
 
@@ -83,13 +115,21 @@
 
 (defn run-workflow-command
   "Execute a command through the workflow state machine.
-   Handles job tracking, status capture, and result formatting."
+   Expands tokens, handles job tracking, status capture, and result formatting."
   [cmd]
   (log/log! :info "WORKFLOW START" {:verb (:verb cmd) :target (:target cmd)})
   ;; Track for redo
   (when-not (:is-redo cmd)
     (worker/set-last-command! cmd))
-  (let [wf       (workflow/verb->workflow (:verb cmd))
+  ;; Expand tokens against dictionary
+  (let [cmd      (expand-cmd cmd)
+        _        (when (seq (:warnings cmd))
+                   (doseq [w (:warnings cmd)]
+                     (log/log! :warn "EXPANSION WARNING" {:warning w})))
+        ;; Use workflow from expansion if available, fall back to verb->workflow
+        wf       (if-let [wf-type (:workflow cmd)]
+                   (workflow/get-workflow wf-type)
+                   (workflow/verb->workflow (:verb cmd)))
         handlers (worker/build-handlers)
         job-id   (worker/start-job! cmd)
         [result lines]
@@ -101,6 +141,10 @@
                               (when-let [t (:target cmd)]
                                 (when (not= t "global_context") (str "@" t)))
                               "━━━")
+              ;; Show expansion warnings to user
+              (when (seq (:warnings cmd))
+                (doseq [w (:warnings cmd)]
+                  (worker/status! "⚠" w)))
               (let [result (workflow/run wf cmd handlers
                                         {:on-state (fn [state _def]
                                                      (log/log! :debug "STATE" {:state state}))})]

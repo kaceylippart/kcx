@@ -49,6 +49,15 @@
     :review      {:handler :reviewer  :next :curate    :on-reject :implement :retries 3}
     :curate      {:handler :curator   :next :done}}})
 
+(def review-workflow
+  "WORKER (review) → CURATOR → DONE
+   Lightweight path for review/check/lint — no testing or secondary review."
+  {:id      :review
+   :initial :work
+   :states
+   {:work   {:handler :worker  :next :curate :on-fail :failed}
+    :curate {:handler :curator :next :done}}})
+
 (def architect-workflow
   "ARCHITECT → WORKER → TESTER → REVIEWER → CURATOR → DONE
    Architect creates specs first, then standard pipeline."
@@ -66,8 +75,18 @@
   "Map a DSL verb to its workflow definition."
   [verb]
   (case verb
-    ("test" "tdd")                     tdd-workflow
-    ("plan" "arch" "design" "analyze") architect-workflow
+    ("test" "tdd")                        tdd-workflow
+    ("plan" "arch" "design" "analyze")    architect-workflow
+    ("review" "check" "lint")             review-workflow
+    standard-workflow))
+
+(defn get-workflow
+  "Get a workflow definition by keyword type (:standard, :tdd, :architect)."
+  [workflow-type]
+  (case workflow-type
+    :tdd       tdd-workflow
+    :architect architect-workflow
+    :review    review-workflow
     standard-workflow))
 
 

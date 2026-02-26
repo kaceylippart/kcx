@@ -8,7 +8,29 @@
     [kcx.logging :as log]
     [kcx.orchestrator :as orchestrator]
     [kcx.state :as state]
-    [kcx.utils :refer [write-file]]))
+    [kcx.utils :refer [write-file]]
+    [kcx.worker :as worker]))
+
+
+;; ============================================================================
+;; MCP Progress Notifications
+;; ============================================================================
+
+(def ^:dynamic *stdout-lock* (Object.))
+
+(defn- send-progress!
+  "Send an MCP progress notification over stdout.
+   Thread-safe — synchronizes on stdout lock."
+  [progress-token message]
+  (when progress-token
+    (let [notification {:jsonrpc "2.0"
+                        :method "notifications/progress"
+                        :params {:progressToken progress-token
+                                 :progress 0
+                                 :message message}}]
+      (locking *stdout-lock*
+        (println (json/generate-string notification))
+        (flush)))))
 
 
 (defn handle-tool-call
@@ -48,9 +70,13 @@
         args (get params "arguments")
         result (case method
                  "initialize"
-                 {:protocolVersion "2024-11-05"
-                  :capabilities {:tools {}}
-                  :serverInfo {:name "kcx" :version (str/trim (slurp "VERSION"))}}
+                 (let [kcx-root (or (System/getenv "KCX_HOME")
+                                    (str (System/getProperty "user.home") "/kcx"))
+                       version (try (str/trim (slurp (str kcx-root "/VERSION")))
+                                    (catch Exception _ "dev"))]
+                   {:protocolVersion "2024-11-05"
+                    :capabilities {:tools {}}
+                    :serverInfo {:name "kcx" :version version}})
 
                  ;; Notifications don't get responses
                  "notifications/initialized" nil
@@ -74,8 +100,12 @@
                                          :required ["path" "content"]}}]}
 
                  "tools/call"
-                 {:content [{:type "text"
-                             :text (handle-tool-call (get params "name") args)}]}
+                 (let [progress-token (get-in params ["_meta" "progressToken"])]
+                   (binding [worker/*progress-callback*
+                             (when progress-token
+                               (fn [msg] (send-progress! progress-token msg)))]
+                     {:content [{:type "text"
+                                 :text (handle-tool-call (get params "name") args)}]}))
 
                  ;; Unknown method - log but don't respond
                  (do (log/log! :warn "UNKNOWN METHOD" method) nil))]
@@ -94,11 +124,13 @@
         (try
           (when-let [res (handle-request req)]
             (let [response {:jsonrpc "2.0" :id (get req "id") :result res}]
-              (println (json/generate-string response))
-              (flush)))
+              (locking *stdout-lock*
+                (println (json/generate-string response))
+                (flush))))
           (catch Exception e
             (log/log-error! "Request handling error" e)
-            (println (json/generate-string {:jsonrpc "2.0" :id (get req "id") :error {:code -32603 :message (str e)}}))
-            (flush)))))
+            (locking *stdout-lock*
+              (println (json/generate-string {:jsonrpc "2.0" :id (get req "id") :error {:code -32603 :message (str e)}}))
+              (flush))))))
     (finally
       (log/end-session!))))

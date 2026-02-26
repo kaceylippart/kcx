@@ -12,7 +12,7 @@
   {:verbs
    {"review" {:prompt "Review {target}, focusing on {scope}."
               :params [{:name "target" :default "the codebase"}
-                       {:name "scope"  :default :omit}]
+                       {:name "scope"  :default "correctness and code quality"}]
               :workflow :standard}
     "fix"    {:prompt "Fix the issue in {target}."
               :params [{:name "target" :default "the codebase"}]
@@ -64,26 +64,26 @@
            (expand/render-template
              "Review {target}, focusing on {scope}."
              [{:name "target" :default "the codebase"}
-              {:name "scope"  :default :omit}]
+              {:name "scope"  :default "correctness and code quality"}]
              ["calc.clj" "divide-fn"])))))
 
-(deftest test-render-template-default-string
-  (testing "Missing param uses string default"
-    (is (= "Review the codebase."
+(deftest test-render-template-defaults
+  (testing "Missing params use string defaults"
+    (is (= "Review the codebase, focusing on correctness and code quality."
            (expand/render-template
              "Review {target}, focusing on {scope}."
              [{:name "target" :default "the codebase"}
-              {:name "scope"  :default :omit}]
+              {:name "scope"  :default "correctness and code quality"}]
              [])))))
 
-(deftest test-render-template-omit-default
-  (testing "Missing param with :omit drops the sentence"
-    (let [result (expand/render-template
-                   "Review {target}, focusing on {scope}."
-                   [{:name "target" :default "the codebase"}
-                    {:name "scope"  :default :omit}]
-                   ["calc.clj"])]
-      (is (= "Review calc.clj." result)))))
+(deftest test-render-template-partial-defaults
+  (testing "Some args provided, rest use defaults"
+    (is (= "Review calc.clj, focusing on correctness and code quality."
+           (expand/render-template
+             "Review {target}, focusing on {scope}."
+             [{:name "target" :default "the codebase"}
+              {:name "scope"  :default "correctness and code quality"}]
+             ["calc.clj"])))))
 
 (deftest test-render-template-no-params
   (testing "Template with no param slots passes through"
@@ -93,8 +93,8 @@
              nil
              [])))))
 
-(deftest test-render-template-partial-args
-  (testing "Some args provided, rest use defaults"
+(deftest test-render-template-single-param
+  (testing "Single param substitution"
     (is (= "Fix the issue in calc.clj."
            (expand/render-template
              "Fix the issue in {target}."
@@ -171,16 +171,16 @@
                :user-text nil}
           result (expand/expand cmd test-base-expansions)]
       (is (:expanded? result))
-      (is (= "Review the codebase."
+      (is (= "Review the codebase, focusing on correctness and code quality."
              (:expanded-verb result))))))
 
 (deftest test-expand-verb-partial-args
-  (testing "Verb with some args, rest default"
+  (testing "Verb with some args, rest use default"
     (let [cmd {:verb {:name "review" :args ["calc.clj"]}
                :modifiers []
                :user-text nil}
           result (expand/expand cmd test-base-expansions)]
-      (is (= "Review calc.clj."
+      (is (= "Review calc.clj, focusing on correctness and code quality."
              (:expanded-verb result))))))
 
 (deftest test-expand-modifiers

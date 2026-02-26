@@ -109,16 +109,16 @@ Verb and modifier definitions use `{param}` templates with positional arguments:
 ;; Definition
 {"review" {:prompt "Review {target}, focusing on {scope}."
            :params [{:name "target" :default "the codebase"}
-                    {:name "scope"  :default :omit}]
+                    {:name "scope"  :default "correctness and code quality"}]
            :workflow :standard}}
 
 ;; Expansion
 ;; !review @calc.clj @divide-fn  → "Review calc.clj, focusing on divide-fn."
-;; !review @calc.clj             → "Review calc.clj."  (scope omitted)
-;; !review                       → "Review the codebase."  (all defaults)
+;; !review @calc.clj             → "Review calc.clj, focusing on correctness and code quality."
+;; !review                       → "Review the codebase, focusing on correctness and code quality."
 ```
 
-Params with `:omit` default drop the containing clause when no argument is provided.
+Every param has a string default — no magic clause dropping, just straightforward substitution.
 
 ### Three-Tier Dictionary
 

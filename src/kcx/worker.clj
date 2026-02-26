@@ -11,6 +11,7 @@
     [clojure.edn :as edn]
     [clojure.pprint :as pprint]
     [clojure.string :as str]
+    [kcx.expand :as expand]
     [kcx.logging :as log]
     [kcx.state :as state]))
 
@@ -68,10 +69,11 @@
 
 (defn build-worker-prompt
   "Build a comprehensive prompt for autonomous multi-file work.
-   Includes memory context from past work on this target.
+   Uses expanded verb/modifiers when available, falls back to raw tokens.
    Optional reviewer-feedback is passed when retrying after rejection.
    Supports :instruction field for natural language context."
-  [{:keys [verb target includes excludes instruction] :as cmd} & {:keys [reviewer-feedback iteration]}]
+  [{:keys [verb target includes excludes instruction expanded-verb expanded-modifiers expanded?] :as cmd}
+   & {:keys [reviewer-feedback iteration]}]
   (let [;; Sanitize all inputs to prevent injection
         safe-verb (sanitize-shell-arg verb)
         safe-target (sanitize-shell-arg target)
@@ -80,38 +82,60 @@
         safe-instruction (sanitize-shell-arg instruction)
         safe-reviewer-feedback (sanitize-shell-arg reviewer-feedback)
 
-        action (str/upper-case safe-verb)
-        constraints (cond-> []
-                      (seq safe-includes) (conj (str "FOCUS ON: " (str/join ", " safe-includes)))
-                      (seq safe-excludes) (conj (str "AVOID: " (str/join ", " safe-excludes))))
-        target-str (if (and safe-target (not= safe-target "global_context"))
-                     (str "starting from " safe-target)
-                     "across the codebase")
+        ;; Use expanded text if available, otherwise fall back to raw tokens
+        task-description (if expanded?
+                           expanded-verb
+                           (let [action (str/upper-case safe-verb)
+                                 target-str (if (and safe-target (not= safe-target "global_context"))
+                                              (str "starting from " safe-target)
+                                              "across the codebase")]
+                             (str action " " target-str)))
+
+        ;; Filter modifiers for worker role
+        worker-modifiers (when (seq expanded-modifiers)
+                           (expand/filter-modifiers-for :worker expanded-modifiers))
+
+        ;; Legacy constraints (when no expansion)
+        constraints (when-not expanded?
+                      (cond-> []
+                        (seq safe-includes) (conj (str "FOCUS ON: " (str/join ", " safe-includes)))
+                        (seq safe-excludes) (conj (str "AVOID: " (str/join ", " safe-excludes)))))
+
         memory-context (state/build-memory-context cmd)
         retry-context (when safe-reviewer-feedback
                         (str "\n⚠️ PREVIOUS ATTEMPT REJECTED (iteration " iteration ").\n"
                              "Reviewer feedback: " safe-reviewer-feedback "\n"
                              "Address this feedback in your implementation.\n"))]
     (str
-      "You are WORKER, an autonomous coding agent. Your task: " action " " target-str ".\n"
+      "You are WORKER, an autonomous coding agent. Your task: " task-description "\n"
       (when safe-instruction
         (str "\n## INSTRUCTION\n" safe-instruction "\n"))
+      (when (seq worker-modifiers)
+        (str "\n## DIRECTIVES\n"
+             (str/join "\n" (map :prompt worker-modifiers)) "\n"))
       (when memory-context
         (str "\n" memory-context "\n"))
       (when (seq constraints)
         (str "\nConstraints: " (str/join ". " constraints) ".\n"))
       retry-context
-      "\n## PROTOCOL\n"
-      "1. EXPLORE: Search the codebase to understand the full scope. Use Glob/Grep to find all related files.\n"
-      "2. ANALYZE: Read files to understand dependencies, patterns, and architecture.\n"
-      "3. PLAN: Identify ALL files that need changes (not just the target).\n"
-      "4. IMPLEMENT: Make comprehensive changes across all necessary files.\n"
-      "5. VERIFY: If Bash is available, run tests/build to confirm changes work.\n"
-      "\n## AUTONOMY\n"
-      "- You have FULL permission to modify ANY file needed to complete the task.\n"
-      "- Change as many files as necessary - don't limit yourself to one file.\n"
-      "- Follow existing patterns and conventions in the codebase.\n"
-      "- If you find related issues while working, fix them too.\n"
+      (if (#{"review" "check" "lint"} safe-verb)
+        ;; Review verbs: lightweight read-and-report protocol
+        (str "\n## PROTOCOL\n"
+             "1. FIND: Locate the target file(s). Use Glob if the path is a namespace.\n"
+             "2. READ: Read the file(s) thoroughly.\n"
+             "3. REVIEW: Assess correctness, code quality, edge cases, and potential issues.\n")
+        ;; Implementation verbs: full explore-and-implement protocol
+        (str "\n## PROTOCOL\n"
+             "1. EXPLORE: Search the codebase to understand the full scope. Use Glob/Grep to find all related files.\n"
+             "2. ANALYZE: Read files to understand dependencies, patterns, and architecture.\n"
+             "3. PLAN: Identify ALL files that need changes (not just the target).\n"
+             "4. IMPLEMENT: Make comprehensive changes across all necessary files.\n"
+             "5. VERIFY: If Bash is available, run tests/build to confirm changes work.\n"
+             "\n## AUTONOMY\n"
+             "- You have FULL permission to modify ANY file needed to complete the task.\n"
+             "- Change as many files as necessary - don't limit yourself to one file.\n"
+             "- Follow existing patterns and conventions in the codebase.\n"
+             "- If you find related issues while working, fix them too.\n"))
       "\n## OUTPUT (required at end)\n"
       "WORKER_RESULT|STATUS|FILES|SUMMARY\n"
       "- STATUS: 'success' or 'failed'\n"
@@ -163,14 +187,20 @@
 
 (defn build-reviewer-prompt
   "Build prompt for reviewer to check worker's changes.
-   Includes memory context of past issues and patterns."
+   Includes memory context of past issues and patterns.
+   Uses expanded modifiers targeted at :reviewer when available."
   [worker-result files-changed & {:keys [cmd]}]
-  (let [memory-context (when cmd (state/build-memory-context cmd))]
+  (let [memory-context (when cmd (state/build-memory-context cmd))
+        reviewer-modifiers (when (seq (:expanded-modifiers cmd))
+                             (expand/filter-modifiers-for :reviewer (:expanded-modifiers cmd)))]
     (str
       "You are REVIEWER. Check these changes:\n"
       "Files: " (str/join ", " files-changed) "\n"
       (when memory-context
         (str "\n" memory-context "\n"))
+      (when (seq reviewer-modifiers)
+        (str "\n## DIRECTIVES\n"
+             (str/join "\n" (map :prompt reviewer-modifiers)) "\n"))
       "Summary: " (:summary worker-result) "\n"
       "\nRead the files. Verify correctness.\n"
       "\nOutput EXACTLY:\n"
@@ -423,10 +453,11 @@
 
 (def ^:dynamic *status-lines* nil)
 (def ^:dynamic *workflow-start* nil)
+(def ^:dynamic *progress-callback* nil)
 
 (defn status!
   "Record a status line. Accumulated for MCP response.
-   Includes elapsed time when within a workflow."
+   Also sends MCP progress notification if callback is bound."
   [& parts]
   (let [elapsed (when *workflow-start*
                   (str "[" (format-elapsed *workflow-start*) "]"))
@@ -434,6 +465,9 @@
                   (str/join " " (map str parts)))]
     (when *status-lines*
       (swap! *status-lines* conj line))
+    ;; Send MCP progress notification in real-time
+    (when *progress-callback*
+      (*progress-callback* line))
     ;; Also try stderr in case it works in some contexts
     (binding [*out* *err*]
       (println line))))
@@ -513,7 +547,12 @@
       (let [safe-model (sanitize-shell-arg worker-model)
             safe-tools (sanitize-shell-arg tools)
             safe-permission-mode (sanitize-shell-arg permission-mode)
-            safe-prompt (sanitize-shell-arg prompt)
+            ;; Prompt preserves newlines and pipes — only neutralize shell expansion chars
+            ;; Inside double quotes, only $, `, \, and " are special
+            safe-prompt (-> prompt
+                            (str/replace #"[$`\\]" "")
+                            (str/replace "\"" "\\\"")
+                            (str/replace "'" "\\'"))
             safe-claude-path (sanitize-shell-arg claude-path)
             env-vars (str "PATH=\"$PATH\" "
                           "HOME=\"$HOME\" "
@@ -645,21 +684,31 @@
 
 (defn build-tester-prompt
   "Build a prompt for autonomous test creation.
-   Includes memory context of past test patterns and issues.
+   Uses expanded verb/modifiers when available.
    Supports :instruction field for natural language context."
-  [{:keys [verb target includes excludes instruction] :as cmd}]
+  [{:keys [verb target includes excludes instruction expanded-verb expanded-modifiers expanded?] :as cmd}]
   (let [target-str (if (and target (not= target "global_context"))
                      (str "starting from " target)
                      "across the codebase")
         tdd-mode? (= "tdd" verb)
-        constraints (cond-> []
-                      (seq includes) (conj (str "FOCUS ON: " (str/join ", " includes)))
-                      (seq excludes) (conj (str "AVOID: " (str/join ", " excludes))))
+        ;; Use expanded verb if available for task description
+        task-desc (if expanded?
+                    expanded-verb
+                    (str "Write " (if tdd-mode? "TDD" "comprehensive") " tests " target-str))
+        tester-modifiers (when (seq expanded-modifiers)
+                           (expand/filter-modifiers-for :tester expanded-modifiers))
+        constraints (when-not expanded?
+                      (cond-> []
+                        (seq includes) (conj (str "FOCUS ON: " (str/join ", " includes)))
+                        (seq excludes) (conj (str "AVOID: " (str/join ", " excludes)))))
         memory-context (state/build-memory-context cmd)]
     (str
-      "You are TESTER, an autonomous testing agent. Write " (if tdd-mode? "TDD" "comprehensive") " tests " target-str ".\n"
+      "You are TESTER, an autonomous testing agent. " task-desc "\n"
       (when instruction
         (str "\n## INSTRUCTION\n" instruction "\n"))
+      (when (seq tester-modifiers)
+        (str "\n## DIRECTIVES\n"
+             (str/join "\n" (map :prompt tester-modifiers)) "\n"))
       (when memory-context
         (str "\n" memory-context "\n"))
       (when (seq constraints)
@@ -755,26 +804,35 @@
 
 (defn build-architect-prompt
   "Build a prompt for autonomous architectural planning.
-   Includes memory context of past architectural decisions.
+   Uses expanded verb/modifiers when available.
    Supports :instruction field for natural language context."
-  [{:keys [verb target includes excludes instruction] :as cmd}]
-  (let [action (case verb
-                 "plan" "Create an implementation plan"
-                 "design" "Design the system architecture"
-                 "arch" "Define the technical architecture"
-                 "analyze" "Analyze the codebase and requirements"
-                 (str "Create documentation for " verb))
-        target-str (if (and target (not= target "global_context"))
-                     (str " for " target)
-                     " for the system")
-        constraints (cond-> []
-                      (seq includes) (conj (str "FOCUS ON: " (str/join ", " includes)))
-                      (seq excludes) (conj (str "AVOID: " (str/join ", " excludes))))
+  [{:keys [verb target includes excludes instruction expanded-verb expanded-modifiers expanded?] :as cmd}]
+  (let [task-desc (if expanded?
+                    expanded-verb
+                    (let [action (case verb
+                                  "plan" "Create an implementation plan"
+                                  "design" "Design the system architecture"
+                                  "arch" "Define the technical architecture"
+                                  "analyze" "Analyze the codebase and requirements"
+                                  (str "Create documentation for " verb))
+                          target-str (if (and target (not= target "global_context"))
+                                       (str " for " target)
+                                       " for the system")]
+                      (str action target-str)))
+        architect-modifiers (when (seq expanded-modifiers)
+                              (expand/filter-modifiers-for :architect expanded-modifiers))
+        constraints (when-not expanded?
+                      (cond-> []
+                        (seq includes) (conj (str "FOCUS ON: " (str/join ", " includes)))
+                        (seq excludes) (conj (str "AVOID: " (str/join ", " excludes)))))
         memory-context (state/build-memory-context cmd)]
     (str
-      "You are ARCHITECT, an autonomous design agent. " action target-str ".\n"
+      "You are ARCHITECT, an autonomous design agent. " task-desc "\n"
       (when instruction
         (str "\n## INSTRUCTION\n" instruction "\n"))
+      (when (seq architect-modifiers)
+        (str "\n## DIRECTIVES\n"
+             (str/join "\n" (map :prompt architect-modifiers)) "\n"))
       (when memory-context
         (str "\n" memory-context "\n"))
       (when (seq constraints)

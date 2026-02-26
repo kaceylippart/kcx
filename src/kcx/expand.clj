@@ -17,85 +17,30 @@
 ;; Template Rendering
 ;; ============================================================================
 
-(defn- split-clauses
-  "Split text into clause segments by comma or period boundaries.
-   Each segment is trimmed. Periods are preserved with their clause."
-  [text]
-  ;; Split on comma-space or period-space boundaries, preserving delimiters
-  ;; We split on ", " to get clauses within sentences
-  (let [;; First split on period boundaries (sentence-level)
-        sentences (str/split text #"(?<=\.)\s+")
-        ;; Then split each sentence on comma boundaries (clause-level)
-        clauses (mapcat (fn [sentence]
-                          (let [parts (str/split sentence #",\s*")]
-                            (if (= 1 (count parts))
-                              [sentence]
-                              ;; Recombine: first part stays, rest get trimmed
-                              parts)))
-                        sentences)]
-    (vec (filter #(not (str/blank? %)) (map str/trim clauses)))))
-
-(defn- rejoin-clauses
-  "Rejoin clauses into a sentence, cleaning up punctuation."
-  [clauses]
-  (let [joined (str/join ", " clauses)]
-    ;; Clean up: ", ." → "." and leading ", " etc
-    (-> joined
-        (str/replace #",\s*\." ".")
-        (str/replace #"^,\s*" "")
-        (str/replace #",\s*$" "")
-        str/trim
-        ;; Ensure ends with period if original had one
-        (#(if (and (seq %) (not (str/ends-with? % ".")))
-            (str % ".")
-            %)))))
-
 (defn render-template
   "Render a prompt template with positional args.
 
-   Params define named slots with defaults:
+   Params define named slots with string defaults:
      [{:name \"target\" :default \"the codebase\"}
-      {:name \"scope\"  :default :omit}]
+      {:name \"scope\"  :default \"correctness and code quality\"}]
 
    Args are positional: [\"calc.clj\" \"divide-fn\"]
 
-   When a param's default is :omit and no arg is provided,
-   the clause containing {param} is dropped."
+   Each param resolves to its positional arg if provided, otherwise its default."
   [template params args]
   (if (or (nil? params) (empty? params))
     template
-    (let [args (or args [])
-          ;; Build substitution map: param-name → value or :omit
+    (let [args (vec (or args []))
           substitutions
           (into {}
                 (map-indexed
                   (fn [i {:keys [name default]}]
-                    (let [arg (get (vec args) i)]
-                      [name (if arg
-                              arg
-                              (if (= :omit default)
-                                :omit
-                                default))]))
-                  params))
-          ;; Find params that should be omitted
-          omit-params (set (keep (fn [[k v]] (when (= :omit v) k)) substitutions))
-          ;; If any params are omitted, split into clauses and drop those containing {param}
-          result (if (seq omit-params)
-                   (let [clauses (split-clauses template)
-                         kept (remove
-                                (fn [clause]
-                                  (some #(str/includes? clause (str "{" % "}"))
-                                        omit-params))
-                                clauses)]
-                     (rejoin-clauses kept))
-                   template)]
-      ;; Substitute remaining params
+                    [name (or (get args i) default)])
+                  params))]
       (reduce
         (fn [text [param-name value]]
-          (if (= :omit value)
-            text
-            (str/replace text (str "{" param-name "}") (str value))))
-        result
+          (str/replace text (str "{" param-name "}") (str value)))
+        template
         substitutions))))
 
 
@@ -255,12 +200,12 @@
 
 (defn load-base-expansions
   "Load the base expansion dictionary shipped with KCX.
-   Searches relative to the project root (resources/base-expansions.edn)."
+   Searches relative to the project root and KCX_HOME."
   []
-  (let [;; Try relative path first (normal bb invocation from project root)
+  (let [kcx-home (or (System/getenv "KCX_HOME")
+                     (str (System/getProperty "user.home") "/kcx"))
         candidates ["resources/base-expansions.edn"
-                    ;; Also try relative to this source file's location
-                    (str (System/getProperty "user.dir") "/resources/base-expansions.edn")]
+                    (str kcx-home "/resources/base-expansions.edn")]
         f (->> candidates
                (map io/file)
                (filter #(.exists %))
