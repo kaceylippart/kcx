@@ -17,7 +17,20 @@
 ;; Expansion Integration
 ;; ============================================================================
 
-(defonce base-expansions (expand/load-base-expansions))
+(def ^:private personal-expansions-path
+  (str (System/getProperty "user.home") "/.kcx/expansions.edn"))
+
+(def ^:private project-expansions-path
+  ".kcx/expansions.edn")
+
+(defn- load-expansions
+  "Load and merge all three expansion tiers: base < project < personal.
+   Reloads from disk each call so config changes don't require restart."
+  []
+  (let [base     (expand/load-base-expansions)
+        project  (expand/load-expansions-file project-expansions-path)
+        personal (expand/load-expansions-file personal-expansions-path)]
+    (expand/merge-expansions base project personal)))
 
 (defn- cmd->expandable
   "Adapt a parsed DSL command to the shape expand/expand expects."
@@ -38,7 +51,7 @@
   "Run expansion on a parsed command. Returns the cmd merged with expansion results."
   [cmd]
   (let [expandable (cmd->expandable cmd)
-        expanded (expand/expand expandable base-expansions)]
+        expanded (expand/expand expandable (load-expansions))]
     ;; Merge expansion results back onto the original cmd
     (merge cmd (select-keys expanded [:expanded-verb :expanded-modifiers
                                        :workflow :warnings :expanded?]))))
