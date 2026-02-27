@@ -1,9 +1,9 @@
 (ns kcx.orchestrator
   "Workflow orchestration for KCX.
 
-   Dispatches parsed DSL commands through the data-driven workflow engine.
-   The workflow state machine (kcx.workflow) controls sequencing.
-   Handlers (kcx.worker) control capability."
+   Dispatches parsed DSL commands, expands tokens, and generates
+   workflow plans for parent Claude to execute. Only the curator
+   step spawns a sub-Claude (via !curate callback)."
   (:require
     [clojure.string :as str]
     [kcx.dsl :as dsl]
@@ -92,6 +92,27 @@
          "\n\nUse !help <verb> for details on a specific command."
          "\n\nPresent the above help text exactly as-is.")))
 
+(defn- handle-curate
+  "Handle curator callback from parent Claude.
+   Spawns isolated sub-Claude to update the project briefing."
+  [cmd]
+  (let [args (or (:args cmd) [])
+        target (or (first args) (:target cmd) "unknown")
+        summary (or (second args) "")
+        files-str (or (nth args 2 nil) "")
+        verdict (or (nth args 3 nil) "approve")
+        files (when (seq files-str)
+                (str/split (str/trim files-str) #",\s*"))
+        ;; Build the artifacts map that curator prompt expects
+        artifacts (cond-> {}
+                    (seq summary) (assoc :work {:summary summary
+                                                :files-changed (or files [])})
+                    (seq verdict) (assoc :review {:verdict verdict
+                                                  :feedback (or (:instruction cmd) "")}))
+        ;; Build a cmd with the original verb context
+        curator-cmd (assoc cmd :target target)]
+    (worker/handle-curator curator-cmd artifacts)))
+
 (defn handle-controller
   [cmd]
   (try
@@ -106,97 +127,224 @@
       "status" (str "→ status\n" (state/list-projects))
       "memory" (state/format-memory-bank)
       "clear" (state/clear-memory-bank!)
-      "jobs" (let [running (worker/get-running-jobs)]
-               (if (empty? running)
-                 "No running jobs."
-                 (str "Running jobs:\n"
-                      (str/join "\n\n"
-                                (map worker/format-job-status running)))))
+      "curate" (handle-curate cmd)
       (str "→ " (:verb cmd) " (no handler)"))
     (catch Exception e
       (str "Controller error: " (.getMessage e)))))
 
 
 ;; ============================================================================
-;; Result Formatting
+;; Step Renderers — Generate instructional text for each workflow role
 ;; ============================================================================
 
-(defn format-workflow-result
-  "Format workflow result for MCP response.
-   Reads from the artifacts map produced by the state machine."
-  [result cmd]
-  (try
-    (let [success?   (:success result)
-          artifacts  (:artifacts result)
-          ;; Check for single-agent read-only outputs
-          explanation (get-in artifacts [:explain :explanation])
-          review-text (get-in artifacts [:review :review-text])]
-      (cond
-        ;; Explain workflow — pass the full explanation to parent Claude
-        explanation
-        (str
-          (if success?
-            "═══ EXPLANATION ═══\n\n"
-            "═══ EXPLANATION FAILED ═══\n\n")
-          explanation
-          "\n\n"
-          (if success?
-            "Present the above explanation to the user. Do NOT take further action."
-            "Explainer failed. Present this to the user."))
+(defn- render-modifiers-for
+  "Get formatted modifier text for a specific role."
+  [role cmd]
+  (when (seq (:expanded-modifiers cmd))
+    (let [filtered (expand/filter-modifiers-for role (:expanded-modifiers cmd))]
+      (when (seq filtered)
+        (str "\nDirectives:\n"
+             (str/join "\n" (map #(str "- " (:prompt %)) filtered))
+             "\n")))))
 
-        ;; Standalone review — pass the full review to parent Claude
-        review-text
-        (str
-          (if success?
-            "═══ CODE REVIEW ═══\n\n"
-            "═══ CODE REVIEW FAILED ═══\n\n")
-          review-text
-          "\n\n"
-          (if success?
-            "Present the above review to the user. Do NOT take further action."
-            "Review failed. Present this to the user."))
+(defn- render-retry-rules
+  "Render retry rules for a step, if applicable."
+  [{:keys [on-fail on-reject retries]} step-num steps]
+  (when (and retries (pos? retries))
+    (let [fail-target (or on-fail on-reject)
+          target-step (when fail-target
+                        (some (fn [[i s]] (when (= fail-target (:state s)) (inc i)))
+                              (map-indexed vector steps)))]
+      (when target-step
+        (str "On failure, return to Step " target-step
+             " with your feedback. Max " retries " retries.\n")))))
 
-        ;; Standard workflow — files, summaries, etc.
-        :else
-        (let [all-files  (->> (vals artifacts)
-                              (mapcat #(or (:files-changed %) []))
-                              distinct)
-              arch-summary   (get-in artifacts [:architect :summary])
-              worker-summary (or (get-in artifacts [:work :summary])
-                                 (get-in artifacts [:implement :summary]))
-              review-feedback (get-in artifacts [:review :feedback])]
-          (str
-            (if success?
-              "═══ TASK COMPLETED SUCCESSFULLY ═══\n"
-              "═══ TASK FAILED ═══\n")
-            "\n"
-            (when (seq all-files)
-              (str "Files modified:\n"
-                   (str/join "\n" (map #(str "  • " %) all-files))
-                   "\n\n"))
-            (when arch-summary
-              (str "Architecture/Planning:\n  " arch-summary "\n\n"))
-            (when worker-summary
-              (str "Implementation:\n  " worker-summary "\n\n"))
-            (when (and success? review-feedback)
-              (str "Reviewer assessment:\n  " review-feedback "\n\n"))
-            (if success?
-              "KCX workflow complete. Present the above summary to the user. Do NOT take further action — do not review, fix, or modify any files mentioned above."
-              (str "KCX workflow FAILED. Present the above summary to the user.\n"
-                   "Retries: " (pr-str (:retries result))))))))
-    (catch Exception e
-      (str "ERROR: Failed to format workflow result - " (.getMessage e)))))
+(defn- render-worker-step
+  "Render WORKER step instructions."
+  [cmd]
+  (let [task-desc (or (:expanded-verb cmd) (str "!" (:verb cmd)))]
+    (str "**Role**: You are WORKER.\n\n"
+         "**Task**: " task-desc "\n"
+         (when (:instruction cmd)
+           (str "\n" (:instruction cmd) "\n"))
+         (render-modifiers-for :worker cmd)
+         (if (:prompt cmd)
+           ;; Natural language mode
+           (str "\nProtocol:\n"
+                "1. Search the codebase to understand the full scope (Glob, Grep)\n"
+                "2. Read files to understand dependencies and patterns\n"
+                "3. Identify ALL files that need changes\n"
+                "4. Implement changes across all necessary files\n"
+                "5. Run tests to verify (if available)\n")
+           ;; DSL mode
+           (str "\nProtocol:\n"
+                "1. EXPLORE: Search the codebase to understand the full scope (Glob, Grep)\n"
+                "2. ANALYZE: Read files to understand dependencies, patterns, and architecture\n"
+                "3. PLAN: Identify ALL files that need changes (not just the target)\n"
+                "4. IMPLEMENT: Make comprehensive changes across all necessary files\n"
+                "5. VERIFY: Run tests/build to confirm changes work\n"))
+         "\nYou have full permission to modify any file needed. Follow existing patterns.\n"
+         "\nWhen done, state what files you changed and summarize what you did.\n")))
+
+(defn- render-tester-step
+  "Render TESTER step instructions. Handles both write-tests and validation modes."
+  [cmd step]
+  (let [write-mode? (= :write-tests (:state step))]
+    (str "**Role**: You are TESTER.\n\n"
+         (if write-mode?
+           (str "**Task**: Write tests before implementation.\n"
+                (render-modifiers-for :tester cmd)
+                "\nProtocol:\n"
+                "1. Explore existing test patterns and conventions\n"
+                "2. Analyze the code to identify testable units and edge cases\n"
+                "3. Write comprehensive tests — happy paths, edge cases, error handling\n"
+                "4. Run the test suite to confirm tests execute (they should fail — no implementation yet)\n")
+           (str "**Task**: Validate the changes from the previous step.\n"
+                (render-modifiers-for :tester cmd)
+                "\nProtocol:\n"
+                "1. Read the changed files\n"
+                "2. Write or update tests to cover the changes\n"
+                "3. Run the test suite to verify correctness\n"
+                "4. Check for edge cases and error handling\n"))
+         "\nIf changes are trivial (config, docs, .gitignore), you may SKIP this step.\n"
+         "\nWhen done, state pass, fail, or skip with a brief justification.\n")))
+
+(defn- render-reviewer-step
+  "Render REVIEWER step instructions."
+  [cmd]
+  (str "**Role**: You are REVIEWER.\n\n"
+       "**Task**: Review all changes made so far.\n"
+       (render-modifiers-for :reviewer cmd)
+       "\nProtocol:\n"
+       "1. Read all files that were changed\n"
+       "2. Verify correctness, code quality, and edge cases\n"
+       "3. Check for bugs, security concerns, or improvement opportunities\n"
+       "\nState APPROVE, REJECT, or SKIP with a brief justification.\n"
+       "If changes are trivial (config, docs, .gitignore), you may SKIP.\n"))
+
+(defn- render-architect-step
+  "Render ARCHITECT step instructions."
+  [cmd]
+  (let [task-desc (or (:expanded-verb cmd) (str "!" (:verb cmd)))]
+    (str "**Role**: You are ARCHITECT.\n\n"
+         "**Task**: " task-desc "\n"
+         (when (:instruction cmd)
+           (str "\n" (:instruction cmd) "\n"))
+         (render-modifiers-for :architect cmd)
+         "\nProtocol:\n"
+         "1. Explore the codebase structure, dependencies, and patterns\n"
+         "2. Analyze existing architecture, data flows, and integration points\n"
+         "3. Create a comprehensive design/plan covering:\n"
+         "   - System overview and component relationships\n"
+         "   - Data structures and interfaces\n"
+         "   - File organization and module boundaries\n"
+         "4. Write spec/plan documents as needed\n"
+         "\nWhen done, state what files you created and summarize your design.\n")))
+
+(defn- render-explainer-step
+  "Render EXPLAINER step instructions."
+  [cmd]
+  (let [task-desc (or (:expanded-verb cmd)
+                      (str "Explain how " (or (:target cmd) "the codebase") " works."))]
+    (str "**Role**: You are EXPLAINER.\n\n"
+         "**Task**: " task-desc "\n"
+         (when (:instruction cmd)
+           (str "\n" (:instruction cmd) "\n"))
+         (render-modifiers-for :explainer cmd)
+         "\nProtocol:\n"
+         "1. Read the target file(s) and any closely related code\n"
+         "2. Understand the architecture and design decisions\n"
+         "3. Explain clearly — what it does, how it works, why it's structured that way\n"
+         "4. Note key dependencies, patterns, and non-obvious design decisions\n"
+         "\nDo NOT modify any files. Your output IS the explanation.\n")))
+
+(defn- render-curator-step
+  "Render CURATOR callback instructions."
+  [cmd]
+  (let [target (when (and (:target cmd) (not= "global_context" (:target cmd)))
+                 (:target cmd))]
+    (str "**Action**: Update the project memory bank.\n\n"
+         "Call `kcx_command` with:\n"
+         "```\n"
+         "!curate"
+         (when target (str " @" target))
+         " %\"<summary of what you did>\" %\"<comma-separated files changed>\" %\"<verdict: approve/reject/skip>\"\n"
+         "```\n"
+         "\nReplace the placeholders with actual values from your work above.\n"
+         "If no files were changed (explain/review), use empty strings for files and verdict.\n"
+         "Wait for the curator response before presenting the final summary to the user.\n")))
+
+(defn- render-step
+  "Render a single workflow step as instructional text for parent Claude."
+  [step-num total-steps step cmd all-steps]
+  (let [handler (:handler step)
+        role-name (str/upper-case (name handler))
+        suffix (if (= handler :curator) " (callback)" "")]
+    (str "## STEP " step-num " of " total-steps ": " role-name suffix "\n\n"
+         (case handler
+           :worker    (render-worker-step cmd)
+           :tester    (render-tester-step cmd step)
+           :reviewer  (render-reviewer-step cmd)
+           :architect (render-architect-step cmd)
+           :explainer (render-explainer-step cmd)
+           :curator   (render-curator-step cmd))
+         (when-let [retry (render-retry-rules step step-num all-steps)]
+           (str "\n" retry))
+         "\n")))
 
 
 ;; ============================================================================
-;; Workflow Execution
+;; Plan Generation
+;; ============================================================================
+
+(defn- build-workflow-plan
+  "Build a workflow plan document for parent Claude to execute."
+  [cmd wf directive-warnings]
+  (let [steps (workflow/linearize-workflow wf)
+        step-names (map #(name (:handler %)) steps)
+        memory-context (state/build-memory-context cmd)
+        target-str (when (and (:target cmd) (not= "global_context" (:target cmd)))
+                     (str " @" (:target cmd)))]
+    (str "═══ KCX WORKFLOW ═══\n"
+         "!" (:verb cmd) (or target-str "")
+         (when (:instruction cmd) (str " " (:instruction cmd)))
+         "\n"
+         "Workflow: " (name (:id wf))
+         " | Steps: " (str/join " → " step-names)
+         "\n"
+         ;; Show warnings
+         (when (seq (concat (:warnings cmd) directive-warnings))
+           (str "\n"
+                (str/join "\n" (map #(str "⚠ " %)
+                                    (concat (:warnings cmd) directive-warnings)))
+                "\n"))
+         ;; Project briefing
+         (when memory-context
+           (str "\n" memory-context "\n"))
+         "\n---\n\n"
+         ;; Render each step
+         (str/join "---\n\n"
+                   (map-indexed
+                     (fn [i step]
+                       (render-step (inc i) (count steps) step cmd steps))
+                     steps))
+         "## WORKFLOW RULES\n\n"
+         "- Execute steps in order. Each step builds on the previous.\n"
+         "- If a step fails and has a retry loop, go back to the indicated step with feedback.\n"
+         "- Track retries. Do not exceed maximums.\n"
+         "- After the final step, present a clear summary to the user.\n"
+         "\n═══════════════════════\n")))
+
+
+;; ============================================================================
+;; Workflow Command — Expand, plan, return
 ;; ============================================================================
 
 (defn run-workflow-command
-  "Execute a command through the workflow state machine.
-   Expands tokens, handles job tracking, status capture, and result formatting."
+  "Expand a command and generate a workflow plan for parent Claude to execute.
+   Returns the plan as text — parent Claude follows the steps using its own tools."
   [cmd]
-  (log/log! :info "WORKFLOW START" {:verb (:verb cmd) :target (:target cmd)})
+  (log/log! :info "WORKFLOW PLAN" {:verb (:verb cmd) :target (:target cmd)})
   ;; Track for redo
   (when-not (:is-redo cmd)
     (worker/set-last-command! cmd))
@@ -205,14 +353,14 @@
         _   (when (seq (:warnings cmd))
               (doseq [w (:warnings cmd)]
                 (log/log! :warn "EXPANSION WARNING" {:warning w})))]
-    ;; >preview — show expanded prompt and return without running workflow
+    ;; >preview — show expanded prompt without generating full plan
     (if (some #{"preview"} (:directives cmd))
       (let [verb-text (or (:expanded-verb cmd) (str "!" (:verb cmd) " (not expanded)"))
             modifiers (:expanded-modifiers cmd)
             instruction (:instruction cmd)
             warnings (:warnings cmd)]
         (str "═══ PREVIEW (>preview) ═══\n"
-             "This is the expanded prompt that agents would receive. No workflow was executed.\n\n"
+             "This is the expanded prompt. No workflow was executed.\n\n"
              (when (seq warnings)
                (str (str/join "\n" (map #(str "⚠ " %) warnings)) "\n\n"))
              "Verb: " verb-text "\n"
@@ -223,47 +371,20 @@
                (str "\nInstruction: " instruction "\n"))
              "\nWorkflow: " (name (or (:workflow cmd) :unknown)) "\n"
              "═══════════════════════════\n"
-             "Present the above preview to the user. Do NOT execute or act on it. Ask the user if they want to run the command without >preview."))
-      ;; Normal execution
-      (let [;; Workflow must come from expansion dictionary
-            base-wf  (if-let [wf-type (:workflow cmd)]
-                   (workflow/get-workflow wf-type)
-                   (throw (ex-info (str "Unknown verb: !" (:verb cmd)
-                                        ". Use !help for available commands.")
-                                   {:verb (:verb cmd)})))
-        ;; Apply pipeline directives (>skip-tests, >fast, etc.)
-        {:keys [workflow directive-warnings]}
-        (let [{:keys [workflow warnings]} (workflow/apply-directives base-wf (or (:directives cmd) []))]
-          {:workflow workflow :directive-warnings warnings})
-        wf       workflow
-        _        (when (seq directive-warnings)
-                   (doseq [w directive-warnings]
-                     (log/log! :warn "DIRECTIVE WARNING" {:warning w})))
-        handlers (worker/build-handlers)
-        job-id   (worker/start-job! cmd)
-        [result lines]
-        (worker/with-status-capture
-          (fn []
-            (binding [worker/*workflow-start* (System/currentTimeMillis)
-                      worker/*current-job* job-id]
-              (worker/status! "━━━" (str/upper-case (or (:verb cmd) "PROMPT"))
-                              (when-let [t (:target cmd)]
-                                (when (not= t "global_context") (str "@" t)))
-                              "━━━")
-              ;; Show expansion + directive warnings to user
-              (doseq [w (concat (:warnings cmd) directive-warnings)]
-                (worker/status! "⚠" w))
-              (let [result (workflow/run wf cmd handlers
-                                        {:on-state (fn [state _def]
-                                                     (log/log! :debug "STATE" {:state state}))})]
-                (if (:success result)
-                  (worker/status! "✓ DONE")
-                  (worker/status! "✗ FAILED"))
-                (worker/complete-job! job-id (:success result))
-                result))))]
-    (str (worker/format-status-lines lines)
-         "\n\n"
-         (format-workflow-result result cmd))))))
+             "Present the above preview to the user. Do NOT execute or act on it. "
+             "Ask the user if they want to run the command without >preview."))
+      ;; Generate workflow plan
+      (let [base-wf (if-let [wf-type (:workflow cmd)]
+                      (workflow/get-workflow wf-type)
+                      (throw (ex-info (str "Unknown verb: !" (:verb cmd)
+                                           ". Use !help for available commands.")
+                                      {:verb (:verb cmd)})))
+            {:keys [workflow warnings]}
+            (workflow/apply-directives base-wf (or (:directives cmd) []))
+            _ (when (seq warnings)
+                (doseq [w warnings]
+                  (log/log! :warn "DIRECTIVE WARNING" {:warning w})))]
+        (build-workflow-plan cmd workflow warnings)))))
 
 
 ;; ============================================================================
@@ -276,17 +397,6 @@
   (try
     (if-let [last-cmd (worker/get-last-command)]
       (let [merged-cmd (worker/merge-redo-command last-cmd redo-cmd)]
-        (worker/status! "━━━ REDO ━━━")
-        (worker/status! "Original:" (:verb last-cmd)
-                        (when-let [t (:target last-cmd)]
-                          (when (not= t "global_context") (str "@" t))))
-        (when (seq (:modifiers redo-cmd))
-          (worker/status! "Adding:" (str/join " " (map #(str "+" %) (:modifiers redo-cmd)))))
-        (when (seq (:directives redo-cmd))
-          (worker/status! "Directives:" (str/join " " (map #(str ">" %) (:directives redo-cmd)))))
-        (when (:instruction redo-cmd)
-          (worker/status! "Instruction:" (:instruction redo-cmd)))
-        (worker/status! "")
         (run-workflow-command merged-cmd))
       "ERROR: No previous command to redo. Run a command first.")
     (catch Exception e
@@ -299,20 +409,23 @@
 
 (defn execute-command
   "Execute a parsed DSL command.
-   Routes controller commands directly, workflow commands through the state machine."
+   Routes controller commands directly, workflow commands return a plan."
   [cmd]
   (try
     (if (nil? cmd)
       "ERROR: Invalid command. Use: kcx !verb @target +modifier >directive"
       (let [verb (:verb cmd)]
         (case verb
-          ;; Controller commands — no workflow needed
-          ("help" "proj" "list" "status" "jobs" "memory" "clear") (handle-controller cmd)
+          ;; Controller commands — direct response
+          ("help" "proj" "list" "status" "memory" "clear" "curate") (handle-controller cmd)
 
-          ;; Redo — merge with last command and re-run
+          ;; Redo — merge with last command and generate plan
           "redo" (execute-redo cmd)
 
-          ;; Everything else goes through the workflow engine
+          ;; Natural language prompt — generate plan
+          "prompt" (run-workflow-command cmd)
+
+          ;; Everything else — generate workflow plan
           (run-workflow-command cmd))))
     (catch Exception e
       (str "ERROR: Command execution failed - " (.getMessage e)))))

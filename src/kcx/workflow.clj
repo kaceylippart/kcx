@@ -91,6 +91,19 @@
     standard-workflow))
 
 
+(defn linearize-workflow
+  "Walk workflow graph from :initial to :done, return ordered steps.
+   Each step is the state definition map with :state key added."
+  [workflow]
+  (loop [state (:initial workflow)
+         steps []]
+    (if (#{:done :failed nil} state)
+      steps
+      (let [state-def (get-in workflow [:states state])]
+        (recur (:next state-def)
+               (conj steps (assoc state-def :state state)))))))
+
+
 ;; ============================================================================
 ;; Pipeline Directives
 ;; ============================================================================

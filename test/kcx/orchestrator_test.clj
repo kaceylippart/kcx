@@ -28,29 +28,36 @@
 
 
 ;; ============================================================================
-;; Result Formatting
+;; Plan Generation
 ;; ============================================================================
 
-(deftest test-format-workflow-result-success
-  (testing "Successful result formats correctly"
-    (let [result {:success true
-                  :artifacts {:work {:files-changed ["a.clj"] :summary "did work"}
-                              :test {:verdict "pass"}
-                              :review {:verdict "approve" :feedback "lgtm"}
-                              :curate {:updated true}}}
-          formatted (orchestrator/format-workflow-result result {:verb "fix"})]
-      (is (clojure.string/includes? formatted "COMPLETED"))
-      (is (clojure.string/includes? formatted "a.clj"))
-      (is (clojure.string/includes? formatted "did work"))
-      (is (clojure.string/includes? formatted "lgtm")))))
+(deftest test-workflow-plan-structure
+  (testing "Workflow plan contains expected sections"
+    (let [cmd {:verb "fix" :target "calc.clj" :args ["calc.clj"] :modifiers []}
+          result (orchestrator/execute-command cmd)]
+      (is (clojure.string/includes? result "KCX WORKFLOW"))
+      (is (clojure.string/includes? result "!fix"))
+      (is (clojure.string/includes? result "STEP 1"))
+      (is (clojure.string/includes? result "WORKER"))
+      (is (clojure.string/includes? result "WORKFLOW RULES")))))
 
-(deftest test-format-workflow-result-failure
-  (testing "Failed result formats correctly"
-    (let [result {:success false
-                  :artifacts {:work {:files-changed ["a.clj"] :summary "tried"}}
-                  :retries {:test 3}}
-          formatted (orchestrator/format-workflow-result result {:verb "fix"})]
-      (is (clojure.string/includes? formatted "FAILED")))))
+(deftest test-workflow-plan-steps
+  (testing "Standard workflow plan has worker, tester, reviewer, curator steps"
+    (let [cmd {:verb "fix" :target "calc.clj" :args ["calc.clj"] :modifiers []}
+          result (orchestrator/execute-command cmd)]
+      (is (clojure.string/includes? result "WORKER"))
+      (is (clojure.string/includes? result "TESTER"))
+      (is (clojure.string/includes? result "REVIEWER"))
+      (is (clojure.string/includes? result "CURATOR")))))
+
+(deftest test-workflow-plan-with-directives
+  (testing ">yolo produces worker-only plan"
+    (let [cmd {:verb "fix" :target "calc.clj" :args ["calc.clj"] :modifiers [] :directives ["yolo"]}
+          result (orchestrator/execute-command cmd)]
+      (is (clojure.string/includes? result "WORKER"))
+      (is (not (clojure.string/includes? result "TESTER")))
+      (is (not (clojure.string/includes? result "REVIEWER")))
+      (is (not (clojure.string/includes? result "CURATOR"))))))
 
 
 ;; ============================================================================
@@ -69,20 +76,12 @@
 ;; Expansion Integration
 ;; ============================================================================
 
-(deftest test-worker-prompt-uses-expanded-text
-  (testing "Worker prompt builder uses expanded verb when available"
-    (let [cmd {:verb "fix" :target "calc.clj" :modifiers ["thorough"]
-               :expanded? true
-               :expanded-verb "Fix the issue in calc.clj."
-               :expanded-modifiers [{:key "thorough" :prompt "Be thorough. Compare against the broader codebase." :applies-to :all}]}
-          prompt ((resolve 'kcx.worker/build-worker-prompt) cmd)]
-      ;; Should contain the expanded verb text
-      (is (clojure.string/includes? prompt "Fix the issue in calc.clj."))
-      ;; Should contain the expanded modifier as a directive
-      (is (clojure.string/includes? prompt "DIRECTIVES"))
-      (is (clojure.string/includes? prompt "Be thorough"))
-      ;; Should NOT contain raw "FOCUS ON: thorough" (legacy constraints)
-      (is (not (clojure.string/includes? prompt "FOCUS ON:"))))))
+(deftest test-plan-includes-expanded-modifiers
+  (testing "Workflow plan includes expanded modifier text"
+    (let [cmd {:verb "fix" :target "calc.clj" :args ["calc.clj"] :modifiers ["thorough"]}
+          result (orchestrator/execute-command cmd)]
+      ;; Should contain the expanded modifier text
+      (is (clojure.string/includes? result "Be thorough")))))
 
 (deftest test-cmd->expandable-dsl
   (testing "DSL command adapts to expandable format"

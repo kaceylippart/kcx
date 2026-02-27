@@ -67,7 +67,7 @@
 
                  "tools/list"
                  {:tools [{:name "kcx_command"
-                           :description "Execute a KCX command for agent-driven workflows"
+                           :description "Execute a KCX command. Workflow commands return a plan to follow. Controller commands return results directly."
                            :inputSchema {:type "object"
                                          :properties {:command {:type "string"
                                                                 :description "KCX command (e.g., '!fix @file.clj +error-handling')"}}

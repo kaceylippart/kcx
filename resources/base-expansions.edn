@@ -32,12 +32,18 @@
   "tdd"     {:prompt "Implement {target} using test-driven development."
              :params [{:name "target"}]
              :workflow :tdd}
+  "fix-test" {:prompt "Fix the following test: {target}."
+              :params [{:name "target"}]
+              :workflow :standard}
 
   ;; Review workflow — REVIEWER → DONE
   "review"  {:prompt "Review {target}, focusing on {scope}."
              :params [{:name "target"}
                       {:name "scope"  :default "correctness and code quality"}]
              :workflow :review}
+  "check"  {:prompt "Double-check {target}"
+            :params [{:name "target"}]
+            :workflow :review}
 
   ;; Explain workflow — EXPLAINER → DONE
   "explain" {:prompt "Explain how {target} works."

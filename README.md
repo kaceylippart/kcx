@@ -6,15 +6,15 @@
 
 ## Overview
 
-KCX is a multi-agent MCP server that orchestrates AI workflows through a data-driven state machine. A dense DSL compresses intent into minimal keystrokes — tokens expand into rich, precise prompts through a layered dictionary system, then route through specialized agents that run to completion without manual intervention.
+KCX is an MCP server that orchestrates AI workflows through a dense DSL. Tokens expand into rich, precise prompts through a layered dictionary system, then generate structured workflow plans that parent Claude executes directly — with full visibility, full context, and the ability to stop or redirect at any point. Only the curator (memory bank compactor) runs as an isolated sub-Claude.
 
 ### Core Principles
 
 - **Brevity** — Tokens (`!verb`, `+modifier`, `@arg`) compress verbose prompts into keystrokes
 - **Precision** — Tokens expand deterministically; no ambiguity, no interpretation
 - **Context efficiency** — Persistent EDN memory bank, not ever-expanding chat history
-- **Deterministic workflows** — Sequence controlled by a state machine in code, not prompts
-- **Constrain sequence, not capability** — Agents get full tool access; the engine controls ordering
+- **Deterministic workflows** — Sequence defined as data; plans generated from state machine graphs
+- **Full visibility** — Parent Claude executes the plan; you can see, stop, or redirect at any step
 
 ## Quick Start
 
@@ -174,7 +174,7 @@ Modifiers specify which agent they apply to:
 
 ## Workflow Engine
 
-Workflows are defined as data — a map of states and transitions — executed by a single state machine. Each state dispatches to a handler that spawns an autonomous Claude instance.
+Workflows are defined as data — a map of states and transitions. The MCP tool expands your DSL command, linearizes the workflow graph, and returns a structured plan. Parent Claude executes each step using its own tools, then calls back to the curator (the only spawned sub-Claude) to update the memory bank.
 
 ### Workflow Types
 
@@ -188,10 +188,10 @@ Workflows are defined as data — a map of states and transitions — executed b
 
 ### Retry Loops
 
-The state machine handles retries automatically:
-- **Tester fails** → routes back to worker with feedback (up to 3 retries)
-- **Reviewer rejects** → routes back to worker with feedback (up to 3 retries)
-- **Retry exhaustion** → workflow fails with accumulated context
+The workflow plan includes retry instructions:
+- **Tester fails** → return to worker step with feedback (up to 3 retries)
+- **Reviewer rejects** → return to worker step with feedback (up to 3 retries)
+- **Trivial changes** → tester and reviewer may skip with justification
 
 ### Pipeline Directives
 
@@ -207,16 +207,20 @@ Directives (`>`) modify the workflow graph at runtime by removing stages:
 
 Directives are composable: `>skip-tests >skip-review` = `>fast`.
 
-### Agents
+### Roles
 
-| Agent | Role | Capability |
-|-------|------|------------|
-| **Worker** | Developer | Code generation, file operations, full tool access |
-| **Tester** | QA Engineer | Test writing, validation, test execution |
-| **Reviewer** | QA | Code review, approval/rejection with feedback |
-| **Curator** | Librarian | Memory bank compaction (Claude-powered, intelligent) |
-| **Architect** | Designer | System design, planning, specifications |
-| **Explainer** | Reader | Read-only exploration and explanation (no file writes) |
+Each workflow step assigns a role to parent Claude with specific instructions:
+
+| Role | Purpose | Executed by |
+|------|---------|-------------|
+| **Worker** | Code implementation, file operations | Parent Claude |
+| **Tester** | Test writing, validation, test execution | Parent Claude |
+| **Reviewer** | Code review, approval/rejection with feedback | Parent Claude |
+| **Architect** | System design, planning, specifications | Parent Claude |
+| **Explainer** | Read-only exploration and explanation | Parent Claude |
+| **Curator** | Memory bank compaction | Spawned sub-Claude (isolated) |
+
+The curator is isolated so it can assess the project state without bias from the conversation context — it acts as both compactor and referee.
 
 ## State Management
 
@@ -232,17 +236,15 @@ KCX uses a persistent **briefing document** as its memory bank. Each project get
   :known-issues   "Bugs, tech debt, gotchas..."}}
 ```
 
-This briefing is the **sole context** each sub-agent receives about the project. The Curator's job is to keep it comprehensive — a new agent reading only this document should understand the project well enough to work on it.
+This briefing is included at the top of every workflow plan and is the sole context the curator sub-Claude receives. The Curator's job is to keep it comprehensive — a new session reading only this document should understand the project well enough to work on it.
 
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KCX_WORKER_MODEL` | `claude-sonnet-4-20250514` | Model for spawned agents |
-| `KCX_WORKER_TOOLS` | `Read,Write,Edit,Glob,Grep,Bash` | Tools available to agents |
-| `KCX_WORKING_DIR` | `.` | Working directory for agents |
-| `KCX_PERMISSION_MODE` | `bypassPermissions` | Permission mode for agents |
-| `KCX_MAX_ITERATIONS` | `3` | Max retries on rejection |
+| `KCX_WORKER_MODEL` | `claude-sonnet-4-20250514` | Model for curator sub-Claude |
+| `KCX_WORKER_TOOLS` | `Read,Write,Edit,Glob,Grep,Bash` | Tools available to curator |
+| `KCX_PERMISSION_MODE` | `bypassPermissions` | Permission mode for curator |
 | `CLAUDE_PATH` | Auto-detected | Path to Claude CLI binary |
 
 ## Project Structure
@@ -259,8 +261,8 @@ kcx/
 │   ├── dsl.clj          # DSL parser & syntax help
 │   ├── expand.clj       # Prompt expansion engine
 │   ├── workflow.clj     # State machine definitions & executor
-│   ├── orchestrator.clj # Command dispatch & result formatting
-│   ├── worker.clj       # Agent spawning, prompts, handlers
+│   ├── orchestrator.clj # Command dispatch & plan generation
+│   ├── worker.clj       # Curator spawning & redo tracking
 │   ├── state.clj        # Memory bank (v2 briefing format)
 │   ├── logging.clj      # Session logging
 │   └── utils.clj        # IO aliases
@@ -280,6 +282,19 @@ kcx/
 | `kcx_command` | Execute DSL commands or natural language prompts |
 
 ## Changelog
+
+### v0.8.0 — Parent-Driven Workflows
+- **Workflow commands now return plans** — parent Claude executes steps with full visibility and control
+- Only the curator remains as a spawned sub-Claude (isolated for unbiased memory compaction)
+- New `!curate` callback command — parent Claude calls this after completing workflow steps
+- `/kcx` slash command for Claude Code integration
+- `!memory` command — display current project briefing
+- `!clear` command — reset memory bank to fresh template
+- Skip verdict for tester and reviewer on trivial changes (config, docs, .gitignore)
+- Curator added to review and explain workflows for cross-command context continuity
+- `kcx` prefix optional in DSL parser (backward compatible)
+- Dead code sweep: removed all sub-agent handlers, prompt builders, parsers, job tracking (~1000 lines)
+- 90 tests, 247 assertions
 
 ### v0.7.0 — Memory Bank v2, Verb Routing, Help & Preview
 - Memory bank redesigned as structured briefing document (5 sections of curator-maintained prose)

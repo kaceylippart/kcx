@@ -88,7 +88,8 @@ For everything else, pass the **entire argument string** (everything after `/kcx
 ## Rules
 
 1. **Pass the argument string verbatim** — do not interpret, rewrite, or add anything
-2. **Do NOT use your built-in tools** (Read, Write, Edit, Bash, etc.) — KCX spawns its own agents
-3. **Present the result exactly as returned** — do not summarize, act on, or modify the output
+2. **Workflow commands return a PLAN** — when the MCP tool returns a workflow plan (starts with `═══ KCX WORKFLOW ═══`), **you execute the steps yourself** using your own tools (Read, Write, Edit, Bash, Glob, Grep). Follow each step in order.
+3. **Controller commands return results** — for `!help`, `!memory`, `!clear`, `!status`, `!curate`, present the result as-is
 4. If the result says "Do NOT take further action", obey that instruction
 5. If the result is a `>preview`, present it and ask the user if they want to run without `>preview`
+6. **Curator callback** — at the end of a workflow plan, the last step will ask you to call `!curate` via the MCP tool. Do this to update the project memory bank.
