@@ -292,7 +292,7 @@ kcx/
 - `!clear` command — reset memory bank to fresh template
 - Skip verdict for tester and reviewer on trivial changes (config, docs, .gitignore)
 - Curator added to review and explain workflows for cross-command context continuity
-- `kcx` prefix optional in DSL parser (backward compatible)
+- Removed `kcx` prefix requirement from DSL parser
 - Dead code sweep: removed all sub-agent handlers, prompt builders, parsers, job tracking (~1000 lines)
 - 90 tests, 247 assertions
 

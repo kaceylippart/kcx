@@ -139,7 +139,7 @@
 
 (deftest test-dsl-basic-command
   (testing "Basic !verb @target parses correctly"
-    (let [cmd (dsl/parse-command "kcx !fix @calculator.clj")]
+    (let [cmd (dsl/parse-command "!fix @calculator.clj")]
       (is (= "fix" (:verb cmd)))
       (is (= "calculator.clj" (:target cmd)))
       (is (= ["calculator.clj"] (:args cmd)))
@@ -148,7 +148,7 @@
 
 (deftest test-dsl-with-modifiers-and-directives
   (testing "Full command with +modifier and >directive"
-    (let [cmd (dsl/parse-command "kcx !fix @calc.clj +thorough >skip-tests")]
+    (let [cmd (dsl/parse-command "!fix @calc.clj +thorough >skip-tests")]
       (is (= "fix" (:verb cmd)))
       (is (= "calc.clj" (:target cmd)))
       (is (= ["thorough"] (:modifiers cmd)))
@@ -156,19 +156,19 @@
 
 (deftest test-dsl-multiple-directives
   (testing "Multiple >directives parsed"
-    (let [cmd (dsl/parse-command "kcx !fix @calc.clj >skip-tests >skip-review")]
+    (let [cmd (dsl/parse-command "!fix @calc.clj >skip-tests >skip-review")]
       (is (= ["skip-tests" "skip-review"] (:directives cmd))))))
 
 (deftest test-dsl-inline-natural-language
   (testing "Remaining text becomes instruction"
-    (let [cmd (dsl/parse-command "kcx !debug @calc.clj and let me know if there's anything else wrong")]
+    (let [cmd (dsl/parse-command "!debug @calc.clj and let me know if there's anything else wrong")]
       (is (= "debug" (:verb cmd)))
       (is (= "calc.clj" (:target cmd)))
       (is (= "and let me know if there's anything else wrong" (:instruction cmd))))))
 
 (deftest test-dsl-mixed-everything
   (testing "Verb, target, modifier, directive, and natural language"
-    (let [cmd (dsl/parse-command "kcx !fix @calc.clj +thorough >fast just fix the typo")]
+    (let [cmd (dsl/parse-command "!fix @calc.clj +thorough >fast just fix the typo")]
       (is (= "fix" (:verb cmd)))
       (is (= "calc.clj" (:target cmd)))
       (is (= ["thorough"] (:modifiers cmd)))
@@ -177,46 +177,46 @@
 
 (deftest test-dsl-no-old-symbols
   (testing "Old - and & symbols are not parsed as special"
-    (let [cmd (dsl/parse-command "kcx !fix @calc.clj -something &agent")]
+    (let [cmd (dsl/parse-command "!fix @calc.clj -something &agent")]
       ;; -something and &agent should end up in instruction, not parsed as special tokens
       (is (= [] (:directives cmd)))
       (is (some? (:instruction cmd))))))
 
 (deftest test-dsl-quoted-natural-language
   (testing "Quoted prompt still works"
-    (let [cmd (dsl/parse-command "kcx \"add error handling\"")]
+    (let [cmd (dsl/parse-command "\"add error handling\"")]
       (is (= "prompt" (:verb cmd)))
       (is (= "add error handling" (:prompt cmd))))))
 
 (deftest test-dsl-percent-alias
   (testing "% works as alias for @"
-    (let [cmd (dsl/parse-command "kcx !explain %workflows")]
+    (let [cmd (dsl/parse-command "!explain %workflows")]
       (is (= "explain" (:verb cmd)))
       (is (= "workflows" (:target cmd)))
       (is (= ["workflows"] (:args cmd))))))
 
 (deftest test-dsl-multi-params
   (testing "Multiple @ and % fill positional args in order"
-    (let [cmd (dsl/parse-command "kcx !edit @calc.clj %error-handling")]
+    (let [cmd (dsl/parse-command "!edit @calc.clj %error-handling")]
       (is (= "edit" (:verb cmd)))
       (is (= "calc.clj" (:target cmd)))
       (is (= ["calc.clj" "error-handling"] (:args cmd))))))
 
 (deftest test-dsl-quoted-param
   (testing "Quoted param values have quotes stripped"
-    (let [cmd (dsl/parse-command "kcx !edit @calc.clj %\"add error handling\"")]
+    (let [cmd (dsl/parse-command "!edit @calc.clj %\"add error handling\"")]
       (is (= "calc.clj" (:target cmd)))
       (is (= ["calc.clj" "add error handling"] (:args cmd))))))
 
 (deftest test-dsl-quoted-at-param
   (testing "Quoted @ param also works"
-    (let [cmd (dsl/parse-command "kcx !explain @\"test-driven development\"")]
+    (let [cmd (dsl/parse-command "!explain @\"test-driven development\"")]
       (is (= "test-driven development" (:target cmd)))
       (is (= ["test-driven development"] (:args cmd))))))
 
 (deftest test-dsl-mixed-params-with-modifiers
   (testing "Params and modifiers coexist"
-    (let [cmd (dsl/parse-command "kcx !edit @calc.clj %\"fix the bug\" +thorough >fast")]
+    (let [cmd (dsl/parse-command "!edit @calc.clj %\"fix the bug\" +thorough >fast")]
       (is (= ["calc.clj" "fix the bug"] (:args cmd)))
       (is (= ["thorough"] (:modifiers cmd)))
       (is (= ["fast"] (:directives cmd))))))

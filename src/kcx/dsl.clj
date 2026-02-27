@@ -143,15 +143,10 @@
 
 (defn parse-command
   "Main entry point for DSL parsing.
-   Supports DSL commands (!verb @target) and natural language prompts (\"prompt\").
-   Accepts optional 'kcx ' prefix for backward compatibility."
+   Supports DSL commands (!verb @target) and natural language prompts (\"prompt\")."
   [input]
   (when (and input (validate-input input) (not (str/blank? input)))
-    (let [trimmed (str/trim input)
-          ;; Strip optional 'kcx ' prefix for backward compatibility
-          remainder (if (str/starts-with? trimmed "kcx ")
-                     (-> trimmed (subs 4) str/trim)
-                     trimmed)]
+    (let [remainder (str/trim input)]
       (when (seq remainder)
         (or (parse-natural-prompt remainder)
             (parse-dsl-command remainder))))))
