@@ -1074,6 +1074,7 @@
   [cmd artifacts current-state]
   (let [worker-result (or (:work artifacts) (:implement artifacts))
         review-result (:review artifacts)
+        explain-result (:explain artifacts)
         briefing (:briefing current-state)
         cmd-count (get-in current-state [:meta :command-count] 0)]
     (str
@@ -1091,6 +1092,8 @@
       (when (:summary worker-result) (str "Summary: " (:summary worker-result) "\n"))
       (when (:files-changed worker-result) (str "Files changed: " (str/join ", " (:files-changed worker-result)) "\n"))
       (when (:feedback review-result) (str "Reviewer feedback: " (:feedback review-result) "\n"))
+      (when (:review-text review-result) (str "Review output: " (subs (:review-text review-result) 0 (min 500 (count (:review-text review-result)))) "\n"))
+      (when (:summary explain-result) (str "Explanation topic: " (:summary explain-result) "\n"))
       "\n## YOUR TASK\n"
       "Update the project briefing. Output valid EDN with this exact structure:\n\n"
       "{:meta {:version \"2.0\" :project \"" (get-in current-state [:meta :project] "unknown") "\""

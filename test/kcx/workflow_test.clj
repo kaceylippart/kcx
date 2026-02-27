@@ -71,24 +71,25 @@
       (is (contains? (:artifacts result) :validate)))))
 
 (deftest test-review-workflow-happy-path
-  (testing "Review: reviewer → done (single agent, no curator)"
-    (let [handlers {:reviewer (success-handler {:verdict "approve" :feedback "lgtm" :review-text "Full review here"})}
+  (testing "Review: reviewer → curate → done"
+    (let [handlers {:reviewer (success-handler {:verdict "approve" :feedback "lgtm" :review-text "Full review here"})
+                    :curator  (success-handler {:updated true})}
           result   (wf/run wf/review-workflow {:verb "review"} handlers)]
       (is (:success result))
       (is (= :done (:final-state result)))
       (is (contains? (:artifacts result) :review))
-      (is (not (contains? (:artifacts result) :curate)))
+      (is (contains? (:artifacts result) :curate))
       (is (not (contains? (:artifacts result) :work))))))
 
 (deftest test-explain-workflow-happy-path
-  (testing "Explain: explainer → done (single read-only agent)"
-    (let [handlers {:explainer (success-handler {:explanation "This module does X" :summary "Explained the module"})}
+  (testing "Explain: explainer → curate → done"
+    (let [handlers {:explainer (success-handler {:explanation "This module does X" :summary "Explained the module"})
+                    :curator   (success-handler {:updated true})}
           result   (wf/run wf/explain-workflow {:verb "explain"} handlers)]
       (is (:success result))
       (is (= :done (:final-state result)))
       (is (contains? (:artifacts result) :explain))
-      ;; No curator or architect artifacts
-      (is (not (contains? (:artifacts result) :curate)))
+      (is (contains? (:artifacts result) :curate))
       (is (not (contains? (:artifacts result) :architect))))))
 
 (deftest test-architect-workflow-happy-path

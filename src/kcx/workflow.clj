@@ -50,20 +50,22 @@
     :curate      {:handler :curator   :next :done}}})
 
 (def review-workflow
-  "REVIEWER → DONE
-   Single read-only agent for code review. No implementation, no memory update."
+  "REVIEWER → CURATOR → DONE
+   Read-only review, then curator captures context for follow-up commands."
   {:id      :review
    :initial :review
    :states
-   {:review {:handler :reviewer :next :done :on-fail :failed}}})
+   {:review {:handler :reviewer :next :curate :on-fail :failed}
+    :curate {:handler :curator  :next :done}}})
 
 (def explain-workflow
-  "EXPLAINER → DONE
-   Single read-only agent. No files written, no memory update."
+  "EXPLAINER → CURATOR → DONE
+   Read-only explanation, then curator captures context for follow-up commands."
   {:id      :explain
    :initial :explain
    :states
-   {:explain {:handler :explainer :next :done :on-fail :failed}}})
+   {:explain {:handler :explainer :next :curate :on-fail :failed}
+    :curate  {:handler :curator   :next :done}}})
 
 (def architect-workflow
   "ARCHITECT → WORKER → TESTER → REVIEWER → CURATOR → DONE

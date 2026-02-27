@@ -183,8 +183,8 @@ Workflows are defined as data — a map of states and transitions — executed b
 | **Standard** | `!fix`, `!edit`, `!debug`, `!build` | work → test → review → curate |
 | **TDD** | `!test`, `!tdd` | write-tests → implement → validate → review → curate |
 | **Architect** | `!plan`, `!design` | architect → work → test → review → curate |
-| **Review** | `!review` | review → done |
-| **Explain** | `!explain` | explainer → done |
+| **Review** | `!review` | review → curate |
+| **Explain** | `!explain` | explainer → curate |
 
 ### Retry Loops
 
