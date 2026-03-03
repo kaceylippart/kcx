@@ -353,8 +353,9 @@
         _   (when (seq (:warnings cmd))
               (doseq [w (:warnings cmd)]
                 (log/log! :warn "EXPANSION WARNING" {:warning w})))]
-    ;; >preview — show expanded prompt without generating full plan
-    (if (some #{"preview"} (:directives cmd))
+    (cond
+      ;; >preview — show expanded prompt without generating full plan
+      (some #{"preview"} (:directives cmd))
       (let [verb-text (or (:expanded-verb cmd) (str "!" (:verb cmd) " (not expanded)"))
             modifiers (:expanded-modifiers cmd)
             instruction (:instruction cmd)
@@ -373,7 +374,24 @@
              "═══════════════════════════\n"
              "Present the above preview to the user. Do NOT execute or act on it. "
              "Ask the user if they want to run the command without >preview."))
+
+      ;; >yolo — skip workflow, return prompt directly
+      (some #{"yolo"} (:directives cmd))
+      (let [task-desc (or (:expanded-verb cmd) (str "!" (:verb cmd)))
+            modifiers (expand/filter-modifiers-for :worker (or (:expanded-modifiers cmd) []))
+            memory-context (state/build-memory-context cmd)]
+        (str (when memory-context (str memory-context "\n\n"))
+             task-desc "\n"
+             (when (:instruction cmd)
+               (str "\n" (:instruction cmd) "\n"))
+             (when (seq modifiers)
+               (str "\nDirectives:\n"
+                    (str/join "\n" (map #(str "- " (:prompt %)) modifiers))
+                    "\n"))
+             "\nExecute this directly. No testing, review, or memory update."))
+
       ;; Generate workflow plan
+      :else
       (let [base-wf (if-let [wf-type (:workflow cmd)]
                       (workflow/get-workflow wf-type)
                       (throw (ex-info (str "Unknown verb: !" (:verb cmd)

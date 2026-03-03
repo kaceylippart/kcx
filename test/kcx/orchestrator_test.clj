@@ -51,13 +51,13 @@
       (is (clojure.string/includes? result "CURATOR")))))
 
 (deftest test-workflow-plan-with-directives
-  (testing ">yolo produces worker-only plan"
+  (testing ">yolo skips workflow, returns prompt directly"
     (let [cmd {:verb "fix" :target "calc.clj" :args ["calc.clj"] :modifiers [] :directives ["yolo"]}
           result (orchestrator/execute-command cmd)]
-      (is (clojure.string/includes? result "WORKER"))
-      (is (not (clojure.string/includes? result "TESTER")))
-      (is (not (clojure.string/includes? result "REVIEWER")))
-      (is (not (clojure.string/includes? result "CURATOR"))))))
+      (is (clojure.string/includes? result "Fix the following issue"))
+      (is (clojure.string/includes? result "Execute this directly"))
+      (is (not (clojure.string/includes? result "KCX WORKFLOW")))
+      (is (not (clojure.string/includes? result "STEP"))))))
 
 
 ;; ============================================================================

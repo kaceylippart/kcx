@@ -202,7 +202,7 @@ Directives (`>`) modify the workflow graph at runtime by removing stages:
 | `>skip-tests` | Remove tester | work → review → curate |
 | `>skip-review` | Remove reviewer | work → test → curate |
 | `>fast` | Remove tester + reviewer | work → curate |
-| `>yolo` | Worker only | work → done |
+| `>yolo` | Skip workflow entirely | prompt only |
 | `>preview` | Show expanded prompt | no execution |
 
 Directives are composable: `>skip-tests >skip-review` = `>fast`.

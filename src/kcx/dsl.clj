@@ -180,4 +180,4 @@ Directives:
   >skip-tests   - Skip the testing stage
   >skip-review  - Skip the review stage
   >fast         - Worker + curator only
-  >yolo         - Worker only, no validation")
+  >yolo         - Execute prompt directly, skip workflow")
