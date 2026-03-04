@@ -2,7 +2,7 @@
 
 **Stack:** Clojure | Babashka | MCP Protocol | EDN State
 
-> Dense input. Autonomous agents. Persistent memory.
+> Dense input. Structured workflows. Persistent memory.
 
 ## Overview
 
@@ -90,11 +90,12 @@ Everything that isn't a symbol token is natural language, passed as-is:
 /kcx !fix @calculator.clj                          # "Fix the following issue: calculator.clj."
 /kcx !edit @calc.clj %"add error handling"          # Fills both template params
 /kcx !review @calc.clj +thorough                    # Review with modifier
-/kcx !design @auth-system                           # Architect → Worker → Tester → Reviewer
+/kcx !design @auth-system                           # Architect → Worker → Tester → Reviewer → Curator
 /kcx !build a new REST endpoint for users           # Natural language after verb
 /kcx !explain @workflow.clj                         # Read-only explanation
 /kcx !fix @calc.clj >skip-tests just fix the typo  # Skip tester, inline instruction
 /kcx !fix @calc.clj >fast                           # Worker + curator only
+/kcx !fix @calc.clj >yolo just fix the typo        # Execute prompt directly, no workflow
 /kcx !review @calc.clj +thorough >preview           # Show expanded prompt without running
 /kcx !help @review                                  # Show params and template for !review
 /kcx !tdd @utils.clj                                # TDD workflow
@@ -109,7 +110,7 @@ Tokens are keys into a layered expansion dictionary. `!review @calc.clj` expands
 1. **Parser** extracts tokens from input (`!verb`, `@args`, `+modifiers`)
 2. **Expander** resolves each token against the dictionary
 3. **Template engine** fills `{param}` slots with `@` arguments (positional)
-4. **Prompt builders** receive the expanded text, not raw tokens
+4. **Step renderers** receive the expanded text, not raw tokens
 
 ### Template System
 
@@ -158,11 +159,11 @@ Unresolved tokens warn with "did you mean?" suggestions based on edit distance:
 
 ### Modifier Targeting
 
-Modifiers specify which agent they apply to:
+Modifiers specify which role they apply to:
 
-| `applies-to` | Agents |
-|---------------|--------|
-| `:all` | Every agent in the pipeline |
+| `applies-to` | Roles |
+|---------------|-------|
+| `:all` | Every step in the pipeline |
 | `:worker` | Worker only |
 | `:reviewer` | Reviewer only |
 
@@ -271,6 +272,8 @@ kcx/
 │   ├── orchestrator_test.clj # Orchestrator tests
 │   ├── expand_test.clj       # Expansion engine tests
 │   └── state_test.clj        # Memory bank tests
+├── commands/
+│   └── kcx.md           # /kcx slash command (copy to ~/.claude/commands/)
 ├── playground/          # Test environment
 └── logs/                # Session logs
 ```
@@ -292,6 +295,7 @@ kcx/
 - `!clear` command — reset memory bank to fresh template
 - Skip verdict for tester and reviewer on trivial changes (config, docs, .gitignore)
 - Curator added to review and explain workflows for cross-command context continuity
+- `>yolo` directive skips workflow entirely — returns expanded prompt directly
 - Removed `kcx` prefix requirement from DSL parser
 - Dead code sweep: removed all sub-agent handlers, prompt builders, parsers, job tracking (~1000 lines)
 - 90 tests, 247 assertions
