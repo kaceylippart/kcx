@@ -1,5 +1,9 @@
 {:verbs
- {;; Standard workflow — WORKER → TESTER → REVIEWER → CURATOR
+ {;; Skip workflow — just execute the prompt directly
+  "do" {:prompt ""
+        :workflow :skip}
+
+  ;; Standard workflow — WORKER → TESTER → REVIEWER → CURATOR
   "fix"     {:prompt "Fix the following issue: {target}."
              :params [{:name "target"}]
              :workflow :standard}
@@ -16,8 +20,12 @@
              :params [{:name "target"}
                       {:name "change"}]
              :workflow :standard}
+  "refactor" {:prompt "Can we refactor {target} to {change}?"
+              :params [{:name "target"}
+                       {:name "change" :default "be simpler or more efficient"}]
+              :workflow :standard}
 
-  ;; Architect workflow — ARCHITECT → WORKER → TESTER → REVIEWER → CURATOR
+  ;; Architect workflow — ARCHITECT → CURATOR
   "plan"    {:prompt "Create an implementation plan for {target}."
              :params [{:name "target"}]
              :workflow :architect}
@@ -48,7 +56,22 @@
   ;; Explain workflow — EXPLAINER → DONE
   "explain" {:prompt "Explain how {target} works."
              :params [{:name "target"}]
-             :workflow :explain}}
+             :workflow :explain}
+  "ux-patterns" {:prompt "Does these changes follow our core UX principles?
+                          
+1. No dependent state updates using `use-effect` 
+- This causes confusing updates and is typically used in lieu of memoization 
+
+2. No storing of _data_ in _state_ 
+- Centralize state management at the top-level page
+
+3. Components only depend on data to render their own view 
+- Don't recompute / re-render the entire page for every change
+- Don't pass the entire object to every subcomponent
+
+4. Every component must have TESTS
+"
+                 :workflow :review}}
 
  :modifiers
  {"error"       {:prompt "The error message is: {error_message}."
@@ -64,4 +87,25 @@
                   :applies-to :all}
   "style"       {:prompt "Follow the patterns in {ref}."
                  :params [{:name "ref" :default "the existing codebase"}]
-                 :applies-to :worker}}}
+                 :applies-to :worker}
+  "pr-description" {:prompt "Update the PR description to follow this template:
+```
+## Summary
+
+{short summary of the change}
+                             
+## Changes
+
+- {change 1}
+- {change 2}
+...
+
+## How was this change tested?
+
+- {testing approach}
+
+## Rollout
+
+{rollout plan, e.g. gradual rollout, monitoring strategy, etc.}
+```"
+                    :applies-to :all}}}

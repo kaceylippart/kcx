@@ -371,8 +371,9 @@
              "Present the above preview to the user. Do NOT execute or act on it. "
              "Ask the user if they want to run the command without >preview."))
 
-      ;; >yolo — skip workflow, return prompt directly
-      (some #{"yolo"} (:directives cmd))
+      ;; >yolo or :workflow :skip — skip workflow, return prompt directly
+      (or (some #{"yolo"} (:directives cmd))
+          (= :skip (:workflow cmd)))
       (let [task-desc (or (:expanded-verb cmd) (str "!" (:verb cmd)))
             modifiers (expand/filter-modifiers-for :worker (or (:expanded-modifiers cmd) []))
             memory-context (state/build-memory-context cmd)]

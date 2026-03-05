@@ -59,6 +59,14 @@
       (is (not (clojure.string/includes? result "KCX WORKFLOW")))
       (is (not (clojure.string/includes? result "STEP"))))))
 
+(deftest test-workflow-skip
+  (testing ":workflow :skip behaves like >yolo"
+    (let [cmd {:verb "do" :target "calc.clj" :args ["calc.clj"] :modifiers [] :instruction "fix the typo"}
+          result (orchestrator/execute-command cmd)]
+      (is (clojure.string/includes? result "Execute this directly"))
+      (is (clojure.string/includes? result "fix the typo"))
+      (is (not (clojure.string/includes? result "KCX WORKFLOW"))))))
+
 
 ;; ============================================================================
 ;; Redo
