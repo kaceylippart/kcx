@@ -18,20 +18,16 @@
 ;; Expansion Integration
 ;; ============================================================================
 
-(def ^:private personal-expansions-path
-  (str (System/getProperty "user.home") "/.kcx/expansions.edn"))
-
 (def ^:private project-expansions-path
   ".kcx/expansions.edn")
 
 (defn- load-expansions
-  "Load and merge all three expansion tiers: base < project < personal.
+  "Load and merge expansion tiers: base < project.
    Reloads from disk each call so config changes don't require restart."
   []
-  (let [base     (expand/load-base-expansions)
-        project  (expand/load-expansions-file project-expansions-path)
-        personal (expand/load-expansions-file personal-expansions-path)]
-    (expand/merge-expansions base project personal)))
+  (let [base    (expand/load-base-expansions)
+        project (expand/load-expansions-file project-expansions-path)]
+    (expand/merge-expansions base project)))
 
 (defn- cmd->expandable
   "Adapt a parsed DSL command to the shape expand/expand expects."

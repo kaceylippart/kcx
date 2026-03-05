@@ -6,7 +6,7 @@
    they expand into rich prompt text that would otherwise require
    verbose natural language.
 
-   Three-tier resolution: base (ships with KCX) < project < personal."
+   Two-tier resolution: base (ships with KCX) < project (.kcx/expansions.edn)."
   (:require
     [clojure.edn :as edn]
     [clojure.java.io :as io]
@@ -60,18 +60,15 @@
 ;; ============================================================================
 
 (defn merge-expansions
-  "Merge expansion dictionaries: personal > project > base.
-   Merge at key level — if personal defines 'review', it fully replaces base 'review'."
-  [base project personal]
+  "Merge expansion dictionaries: project > base.
+   Merge at key level — if project defines 'review', it fully replaces base 'review'."
+  [base project]
   (let [base    (or base {})
-        project (or project {})
-        personal (or personal {})]
+        project (or project {})]
     {:verbs    (merge (get base :verbs {})
-                      (get project :verbs {})
-                      (get personal :verbs {}))
+                      (get project :verbs {}))
      :modifiers (merge (get base :modifiers {})
-                       (get project :modifiers {})
-                       (get personal :modifiers {}))}))
+                       (get project :modifiers {}))}))
 
 
 ;; ============================================================================

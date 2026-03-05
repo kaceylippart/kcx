@@ -93,16 +93,14 @@
       (is (not (contains? (:artifacts result) :architect))))))
 
 (deftest test-architect-workflow-happy-path
-  (testing "Architect: architect → work → test → review → curate → done"
+  (testing "Architect: architect → curate → done"
     (let [handlers {:architect (success-handler {:files-changed ["spec.md"]})
-                    :worker    (success-handler {:files-changed ["impl.clj"]})
-                    :tester    (success-handler {:verdict "pass"})
-                    :reviewer  (success-handler {:verdict "approve"})
                     :curator   (success-handler {:updated true})}
           result   (wf/run wf/architect-workflow {:verb "plan"} handlers)]
       (is (:success result))
       (is (= :done (:final-state result)))
-      (is (contains? (:artifacts result) :architect)))))
+      (is (contains? (:artifacts result) :architect))
+      (is (contains? (:artifacts result) :curate)))))
 
 
 ;; ============================================================================

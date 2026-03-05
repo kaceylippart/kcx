@@ -68,15 +68,12 @@
     :curate  {:handler :curator   :next :done}}})
 
 (def architect-workflow
-  "ARCHITECT → WORKER → TESTER → REVIEWER → CURATOR → DONE
-   Architect creates specs first, then standard pipeline."
+  "ARCHITECT → CURATOR → DONE
+   Creates specs/plans, then curator captures context. Does not build."
   {:id      :architect
    :initial :architect
    :states
-   {:architect {:handler :architect :next :work    :on-fail :failed}
-    :work      {:handler :worker    :next :test    :on-fail :failed}
-    :test      {:handler :tester    :next :review  :on-fail :work   :retries 3}
-    :review    {:handler :reviewer  :next :curate  :on-reject :work :retries 3}
+   {:architect {:handler :architect :next :curate :on-fail :failed}
     :curate    {:handler :curator   :next :done}}})
 
 

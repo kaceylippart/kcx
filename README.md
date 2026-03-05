@@ -81,7 +81,7 @@ Everything that isn't a symbol token is natural language, passed as-is:
 
 ```bash
 /kcx !fix @calc.clj and make sure the edge cases are covered
-/kcx "add error handling to the calculator"   # pure natural language
+/kcx add error handling to the calculator     # pure natural language (quotes optional)
 ```
 
 ### Examples
@@ -90,7 +90,7 @@ Everything that isn't a symbol token is natural language, passed as-is:
 /kcx !fix @calculator.clj                          # "Fix the following issue: calculator.clj."
 /kcx !edit @calc.clj %"add error handling"          # Fills both template params
 /kcx !review @calc.clj +thorough                    # Review with modifier
-/kcx !design @auth-system                           # Architect → Worker → Tester → Reviewer → Curator
+/kcx !design @auth-system                           # Architect → Curator (plan only)
 /kcx !build a new REST endpoint for users           # Natural language after verb
 /kcx !explain @workflow.clj                         # Read-only explanation
 /kcx !fix @calc.clj >skip-tests just fix the typo  # Skip tester, inline instruction
@@ -103,7 +103,7 @@ Everything that isn't a symbol token is natural language, passed as-is:
 
 ## Prompt Expansion
 
-Tokens are keys into a layered expansion dictionary. `!review @calc.clj` expands to `"Review calc.clj, focusing on {scope}."` — the full prompt you would have typed manually, but in 3 tokens.
+Tokens are keys into a layered expansion dictionary. `!review @calc.clj` expands to `"Review calc.clj, focusing on {scope}."` — the full prompt you would have typed manually, but in 2 tokens.
 
 ### How It Works
 
@@ -137,17 +137,16 @@ Params with `:default` fall back when not provided. Params without `:default` ar
           :workflow :standard}}
 ```
 
-### Three-Tier Dictionary
+### Expansion Dictionary
 
-Expansions merge in priority order: **personal > project > base**.
+Expansions merge in priority order: **project > base**.
 
 | Tier | Location | Purpose |
 |------|----------|---------|
 | **Base** | `resources/base-expansions.edn` | Ships with KCX — sensible defaults |
-| **Project** | `.kcx/expansions.edn` | Team-shared vocabulary |
-| **Personal** | `~/.kcx/expansions.edn` | Individual overrides |
+| **Project** | `.kcx/expansions.edn` | Project-specific vocabulary and overrides |
 
-If your personal dictionary defines `!review`, it fully replaces the base definition — no partial merging.
+If your project dictionary defines `!review`, it fully replaces the base definition — no partial merging.
 
 ### Unknown Tokens
 
@@ -183,7 +182,7 @@ Workflows are defined as data — a map of states and transitions. The MCP tool 
 |------|---------|----------|
 | **Standard** | `!fix`, `!edit`, `!debug`, `!build` | work → test → review → curate |
 | **TDD** | `!test`, `!tdd` | write-tests → implement → validate → review → curate |
-| **Architect** | `!plan`, `!design` | architect → work → test → review → curate |
+| **Architect** | `!plan`, `!design` | architect → curate |
 | **Review** | `!review` | review → curate |
 | **Explain** | `!explain` | explainer → curate |
 

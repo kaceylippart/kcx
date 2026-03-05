@@ -42,14 +42,6 @@
    {"our-style" {:prompt "Follow the team API conventions in routes.clj."
                  :applies-to :worker}}})
 
-(def test-personal-expansions
-  {:verbs
-   {"review" {:prompt "Review {target} with extreme scrutiny. Miss nothing."
-              :params [{:name "target" :default "the codebase"}]
-              :workflow :standard}}
-   :modifiers
-   {"thorough" {:prompt "Go deep. Read every related file. Leave no stone unturned."
-                :applies-to :all}}})
 
 
 ;; ============================================================================
@@ -139,27 +131,15 @@
 
 (deftest test-merge-expansions-base-only
   (testing "Base expansions work alone"
-    (let [merged (expand/merge-expansions test-base-expansions nil nil)]
+    (let [merged (expand/merge-expansions test-base-expansions nil)]
       (is (= "Review {target}, focusing on {scope}."
              (get-in merged [:verbs "review" :prompt])))
       (is (= "Compare against the broader codebase."
              (get-in merged [:modifiers "thorough" :prompt]))))))
 
-(deftest test-merge-expansions-personal-overrides-base
-  (testing "Personal overrides base at key level"
-    (let [merged (expand/merge-expansions test-base-expansions nil test-personal-expansions)]
-      ;; Personal review replaces base review entirely
-      (is (= "Review {target} with extreme scrutiny. Miss nothing."
-             (get-in merged [:verbs "review" :prompt])))
-      ;; Personal thorough replaces base thorough
-      (is (= "Go deep. Read every related file. Leave no stone unturned."
-             (get-in merged [:modifiers "thorough" :prompt])))
-      ;; Base fix still present (not overridden)
-      (is (some? (get-in merged [:verbs "fix"]))))))
-
 (deftest test-merge-expansions-project-adds
   (testing "Project expansions add new entries"
-    (let [merged (expand/merge-expansions test-base-expansions test-project-expansions nil)]
+    (let [merged (expand/merge-expansions test-base-expansions test-project-expansions)]
       ;; Project adds deploy verb
       (is (some? (get-in merged [:verbs "deploy"])))
       ;; Project adds our-style modifier
@@ -167,16 +147,15 @@
       ;; Base entries still present
       (is (some? (get-in merged [:verbs "review"]))))))
 
-(deftest test-merge-expansions-resolution-order
-  (testing "Personal > project > base"
-    (let [;; All three define "review" differently
-          project-with-review (assoc-in test-project-expansions
+(deftest test-merge-expansions-project-overrides-base
+  (testing "Project overrides base at key level"
+    (let [project-with-review (assoc-in test-project-expansions
                                         [:verbs "review"]
                                         {:prompt "Project review of {target}."
                                          :params [{:name "target" :default "the codebase"}]})
-          merged (expand/merge-expansions test-base-expansions project-with-review test-personal-expansions)]
-      ;; Personal wins
-      (is (= "Review {target} with extreme scrutiny. Miss nothing."
+          merged (expand/merge-expansions test-base-expansions project-with-review)]
+      ;; Project wins
+      (is (= "Project review of {target}."
              (get-in merged [:verbs "review" :prompt]))))))
 
 
@@ -386,12 +365,9 @@
     (is (nil? (expand/load-expansions-file "/tmp/does-not-exist-kcx.edn")))))
 
 (deftest test-load-and-merge-full-stack
-  (testing "Load base + merge with in-memory project/personal"
+  (testing "Load base + merge with in-memory project"
     (let [base (expand/load-base-expansions)
-          merged (expand/merge-expansions base test-project-expansions test-personal-expansions)]
-      ;; Personal review overrides base
-      (is (= "Review {target} with extreme scrutiny. Miss nothing."
-             (get-in merged [:verbs "review" :prompt])))
+          merged (expand/merge-expansions base test-project-expansions)]
       ;; Project deploy added
       (is (some? (get-in merged [:verbs "deploy"])))
       ;; Base fix still there
