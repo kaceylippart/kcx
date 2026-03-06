@@ -8,8 +8,10 @@
     [clojure.string :as str]
     [kcx.dsl :as dsl]
     [kcx.expand :as expand]
+    [kcx.journal :as journal]
     [kcx.logging :as log]
     [kcx.state :as state]
+    [kcx.suggestor :as suggestor]
     [kcx.worker :as worker]
     [kcx.workflow :as workflow]))
 
@@ -124,6 +126,7 @@
       "memory" (state/format-memory-bank)
       "clear" (state/clear-memory-bank!)
       "curate" (handle-curate cmd)
+      "suggest" (suggestor/handle-suggestor true (load-expansions))
       (str "→ " (:verb cmd) " (no handler)"))
     (catch Exception e
       (str "Controller error: " (.getMessage e)))))
@@ -348,58 +351,78 @@
   (let [cmd (expand-cmd cmd)
         _   (when (seq (:warnings cmd))
               (doseq [w (:warnings cmd)]
-                (log/log! :warn "EXPANSION WARNING" {:warning w})))]
-    (cond
-      ;; >preview — show expanded prompt without generating full plan
-      (some #{"preview"} (:directives cmd))
-      (let [verb-text (or (:expanded-verb cmd) (str "!" (:verb cmd) " (not expanded)"))
-            modifiers (:expanded-modifiers cmd)
-            instruction (:instruction cmd)
-            warnings (:warnings cmd)]
-        (str "═══ PREVIEW (>preview) ═══\n"
-             "This is the expanded prompt. No workflow was executed.\n\n"
-             (when (seq warnings)
-               (str (str/join "\n" (map #(str "⚠ " %) warnings)) "\n\n"))
-             "Verb: " verb-text "\n"
-             (when (seq modifiers)
-               (str "\nModifiers:\n"
-                    (str/join "\n" (map #(str "  + " (:prompt %)) modifiers)) "\n"))
-             (when instruction
-               (str "\nInstruction: " instruction "\n"))
-             "\nWorkflow: " (name (or (:workflow cmd) :unknown)) "\n"
-             "═══════════════════════════\n"
-             "Present the above preview to the user. Do NOT execute or act on it. "
-             "Ask the user if they want to run the command without >preview."))
+                (log/log! :warn "EXPANSION WARNING" {:warning w})))
+        ;; Journal: capture every workflow command
+        _ (journal/add-entry!
+            {:raw-input (:raw-input cmd)
+             :verb (:verb cmd) :target (:target cmd)
+             :instruction (:instruction cmd)
+             :modifiers (or (:modifiers cmd) [])
+             :directives (or (:directives cmd) [])
+             :workflow (:workflow cmd)
+             :project (state/get-current-project)})
+        ;; Auto-suggest check (every 10 workflow commands)
+        counter (journal/increment-counter!)
+        auto-suggestions (when (>= counter 10)
+                           (journal/reset-counter!)
+                           (suggestor/handle-suggestor false (load-expansions)))
+        ;; Build the main result
+        result
+        (cond
+          ;; >preview — show expanded prompt without generating full plan
+          (some #{"preview"} (:directives cmd))
+          (let [verb-text (or (:expanded-verb cmd) (str "!" (:verb cmd) " (not expanded)"))
+                modifiers (:expanded-modifiers cmd)
+                instruction (:instruction cmd)
+                warnings (:warnings cmd)]
+            (str "═══ PREVIEW (>preview) ═══\n"
+                 "This is the expanded prompt. No workflow was executed.\n\n"
+                 (when (seq warnings)
+                   (str (str/join "\n" (map #(str "⚠ " %) warnings)) "\n\n"))
+                 "Verb: " verb-text "\n"
+                 (when (seq modifiers)
+                   (str "\nModifiers:\n"
+                        (str/join "\n" (map #(str "  + " (:prompt %)) modifiers)) "\n"))
+                 (when instruction
+                   (str "\nInstruction: " instruction "\n"))
+                 "\nWorkflow: " (name (or (:workflow cmd) :unknown)) "\n"
+                 "═══════════════════════════\n"
+                 "Present the above preview to the user. Do NOT execute or act on it. "
+                 "Ask the user if they want to run the command without >preview."))
 
-      ;; >yolo or :workflow :skip — skip workflow, return prompt directly
-      (or (some #{"yolo"} (:directives cmd))
-          (= :skip (:workflow cmd)))
-      (let [task-desc (or (:expanded-verb cmd) (str "!" (:verb cmd)))
-            modifiers (expand/filter-modifiers-for :worker (or (:expanded-modifiers cmd) []))
-            memory-context (state/build-memory-context cmd)]
-        (str (when memory-context (str memory-context "\n\n"))
-             task-desc "\n"
-             (when (:instruction cmd)
-               (str "\n" (:instruction cmd) "\n"))
-             (when (seq modifiers)
-               (str "\nDirectives:\n"
-                    (str/join "\n" (map #(str "- " (:prompt %)) modifiers))
-                    "\n"))
-             "\nExecute this directly. No testing, review, or memory update."))
+          ;; >yolo or :workflow :skip — skip workflow, return prompt directly
+          (or (some #{"yolo"} (:directives cmd))
+              (= :skip (:workflow cmd)))
+          (let [task-desc (or (:expanded-verb cmd) (str "!" (:verb cmd)))
+                modifiers (expand/filter-modifiers-for :worker (or (:expanded-modifiers cmd) []))
+                memory-context (state/build-memory-context cmd)]
+            (str (when memory-context (str memory-context "\n\n"))
+                 task-desc "\n"
+                 (when (:instruction cmd)
+                   (str "\n" (:instruction cmd) "\n"))
+                 (when (seq modifiers)
+                   (str "\nDirectives:\n"
+                        (str/join "\n" (map #(str "- " (:prompt %)) modifiers))
+                        "\n"))
+                 "\nExecute this directly. No testing, review, or memory update."))
 
-      ;; Generate workflow plan
-      :else
-      (let [base-wf (if-let [wf-type (:workflow cmd)]
-                      (workflow/get-workflow wf-type)
-                      (throw (ex-info (str "Unknown verb: !" (:verb cmd)
-                                           ". Use !help for available commands.")
-                                      {:verb (:verb cmd)})))
-            {:keys [workflow warnings]}
-            (workflow/apply-directives base-wf (or (:directives cmd) []))
-            _ (when (seq warnings)
-                (doseq [w warnings]
-                  (log/log! :warn "DIRECTIVE WARNING" {:warning w})))]
-        (build-workflow-plan cmd workflow warnings)))))
+          ;; Generate workflow plan
+          :else
+          (let [base-wf (if-let [wf-type (:workflow cmd)]
+                          (workflow/get-workflow wf-type)
+                          (throw (ex-info (str "Unknown verb: !" (:verb cmd)
+                                               ". Use !help for available commands.")
+                                          {:verb (:verb cmd)})))
+                {:keys [workflow warnings]}
+                (workflow/apply-directives base-wf (or (:directives cmd) []))
+                _ (when (seq warnings)
+                    (doseq [w warnings]
+                      (log/log! :warn "DIRECTIVE WARNING" {:warning w})))]
+            (build-workflow-plan cmd workflow warnings)))]
+      ;; Append auto-suggestions if triggered
+      (if auto-suggestions
+        (str result "\n\n" auto-suggestions)
+        result)))
 
 
 ;; ============================================================================
@@ -432,7 +455,7 @@
       (let [verb (:verb cmd)]
         (case verb
           ;; Controller commands — direct response
-          ("help" "proj" "list" "status" "memory" "clear" "curate") (handle-controller cmd)
+          ("help" "proj" "list" "status" "memory" "clear" "curate" "suggest") (handle-controller cmd)
 
           ;; Redo — merge with last command and generate plan
           "redo" (execute-redo cmd)

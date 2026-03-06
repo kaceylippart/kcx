@@ -174,6 +174,7 @@ Examples:
   /kcx !debug @calc.clj and let me know if there's anything else wrong
   /kcx !fix @calc.clj >fast just fix the typo
   /kcx !redo +step-by-step
+  /kcx !suggest
   /kcx !status
 
 Directives:

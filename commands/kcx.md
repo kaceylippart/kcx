@@ -40,6 +40,7 @@ Control:
   !help @verb           Show details for a specific verb
   !memory               Show the current memory bank (project briefing)
   !clear                Reset the memory bank to a fresh template
+  !suggest              Analyze prompt patterns and suggest new expansions
   !status               Show project status
   !jobs                 Show running jobs
 

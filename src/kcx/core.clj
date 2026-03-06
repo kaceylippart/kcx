@@ -38,7 +38,7 @@
                    (log/log! :debug "COMMAND" {:input cmd})
                    (let [parsed (dsl/parse-command cmd)]
                      (log/log! :debug "DSL PARSE" {:parsed parsed})
-                     (orchestrator/execute-command parsed)))
+                     (orchestrator/execute-command (when parsed (assoc parsed :raw-input cmd)))))
 
                  "Unknown tool")]
     (log/log-tool-result! tool-name result)
