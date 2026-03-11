@@ -238,6 +238,43 @@ KCX uses a persistent **briefing document** as its memory bank. Each project get
 
 This briefing is included at the top of every workflow plan and is the sole context the curator sub-Claude receives. The Curator's job is to keep it comprehensive — a new session reading only this document should understand the project well enough to work on it.
 
+## Prompt Journal & Suggestor
+
+KCX maintains a global prompt journal at `~/.kcx/journal.edn` that captures every command you run. A dedicated suggestor sub-Claude periodically analyzes your usage patterns and proposes new expansion dictionary entries.
+
+### How It Works
+
+1. Every workflow command is logged to the journal (capped at 200 entries)
+2. After every 10 commands, the suggestor automatically analyzes patterns
+3. If repeated phrases are found, it suggests new verbs or modifiers
+4. Suggestions are presented — never auto-applied
+
+### Manual Trigger
+
+```bash
+/kcx !suggest        # Analyze journal and suggest expansions now
+```
+
+### Auto-Trigger
+
+Every 10 workflow commands, the suggestor runs silently in the background. If patterns are found, suggestions appear after the workflow plan. If nothing is found, it stays silent.
+
+### Example Output
+
+```
+═══ EXPANSION SUGGESTIONS ═══
+Analyzed 47 prompts. Found 2 patterns:
+
+1. [verb] "add error handling" (8 occurrences, high confidence)
+   !add-errors @target → "Add error handling to {target}." [standard]
+
+2. [modifier] "step by step" (5 occurrences, medium confidence)
+   +verbose → "Explain your reasoning step-by-step." (all)
+
+To add, copy the EDN to .kcx/expansions.edn
+═══════════════════════════════
+```
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -263,6 +300,8 @@ kcx/
 │   ├── workflow.clj     # State machine definitions & executor
 │   ├── orchestrator.clj # Command dispatch & plan generation
 │   ├── worker.clj       # Curator spawning & redo tracking
+│   ├── journal.clj      # Global prompt journal
+│   ├── suggestor.clj    # Pattern analysis & expansion suggestions
 │   ├── state.clj        # Memory bank (v2 briefing format)
 │   ├── logging.clj      # Session logging
 │   └── utils.clj        # IO aliases
@@ -270,6 +309,7 @@ kcx/
 │   ├── workflow_test.clj     # State machine tests
 │   ├── orchestrator_test.clj # Orchestrator tests
 │   ├── expand_test.clj       # Expansion engine tests
+│   ├── journal_test.clj      # Journal & counter tests
 │   └── state_test.clj        # Memory bank tests
 ├── commands/
 │   └── kcx.md           # /kcx slash command (copy to ~/.claude/commands/)
@@ -285,9 +325,15 @@ kcx/
 
 ## Changelog
 
-### v0.8.0 — Parent-Driven Workflows
+### v0.8.0 — Parent-Driven Workflows + Prompt Journal
 - **Workflow commands now return plans** — parent Claude executes steps with full visibility and control
 - Only the curator remains as a spawned sub-Claude (isolated for unbiased memory compaction)
+- **Prompt journal** — global command log at `~/.kcx/journal.edn`, captures every workflow command
+- **Suggestor agent** — dedicated sub-Claude that analyzes journal patterns and proposes new expansion entries
+- Auto-suggestion every 10 commands (silent if no patterns found) + manual `!suggest` command
+- `:workflow :skip` in expansion dictionary bakes in `>yolo` behavior for specific verbs
+- Architect workflow stops after planning — no longer chains into building/testing
+- Two-tier expansion dictionary (removed personal overrides tier)
 - New `!curate` callback command — parent Claude calls this after completing workflow steps
 - `/kcx` slash command for Claude Code integration
 - `!memory` command — display current project briefing
@@ -297,7 +343,7 @@ kcx/
 - `>yolo` directive skips workflow entirely — returns expanded prompt directly
 - Removed `kcx` prefix requirement from DSL parser
 - Dead code sweep: removed all sub-agent handlers, prompt builders, parsers, job tracking (~1000 lines)
-- 90 tests, 247 assertions
+- 98 tests, 266 assertions
 
 ### v0.7.0 — Memory Bank v2, Verb Routing, Help & Preview
 - Memory bank redesigned as structured briefing document (5 sections of curator-maintained prose)
@@ -322,7 +368,7 @@ kcx/
 - Review workflow (`!review` → reviewer only, no worker overhead)
 - Simplified DSL to 5 symbols, inline natural language (no quotes needed)
 - All agents get full tool access — constrain sequence, not capability
-- Three-tier expansion loading with hot-reload (no restart needed)
+- Layered expansion loading with hot-reload (no restart needed)
 - Single MCP tool: `kcx_command`
 - 82 tests, 214 assertions
 
